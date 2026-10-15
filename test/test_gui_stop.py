@@ -20,8 +20,8 @@ os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 # 固定英文，保证断言确定
 os.environ["HDTUNE_LANG"] = "en"
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import hdtune_gui as H
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import HD_Doc_gui as H
 
 FIO = "C:/Program Files/fio/fio.exe"
 BIG = os.path.abspath(os.path.join("..", "fio_test", "it_big.img"))
@@ -41,7 +41,7 @@ def check(name, got, want):
 def new_app():
     root = H.tk.Tk()
     root.withdraw()
-    app = H.HDTuneScanApp()
+    app = H.HDDocApp()
     app.withdraw()
     app.geometry("1140x820")
     app.canvas_map.winfo_width = lambda: 1100

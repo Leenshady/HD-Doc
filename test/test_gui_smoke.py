@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """GUI 冒烟测试：用系统 Python（带 tkinter）实例化应用并驱动各事件处理器。
-覆盖：英文默认界面、语言切换（中/英）、关于窗口、事件流、完成/错误/快速
-汇总、横幅替代弹窗。"""
+覆盖：英文默认界面、语言切换（保存偏好+重启）、关于窗口、事件流、完成/错误/
+快速汇总、横幅替代弹窗。"""
 import os
 import sys
 import types
@@ -11,14 +11,28 @@ os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 # 固定英文，保证断言确定（语言切换行为单独验证）
 os.environ["HDTUNE_LANG"] = "en"
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import hdtune_gui as H
-from hdtune_core import plan_grid, tr
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import HD_Doc_gui as H
+from HD_Doc_core import plan_grid, tr
 
-# 本模块能导入就说明 tkinter 可用（hdtune_gui 顶层 import tkinter）
+# 本模块能导入就说明 tkinter 可用（HD_Doc_gui 顶层 import tkinter）
 root = H.tk.Tk()
 root.withdraw()
-app = H.HDTuneScanApp()
+app = H.HDDocApp()
+app.update()          # 等窗口映射/移动请求生效后再断言位置
+
+# ---- 启动时窗口居中 ----
+_sw, _sh = app.winfo_screenwidth(), app.winfo_screenheight()
+_wx, _wy = app.winfo_x(), app.winfo_y()
+assert 0 <= _wx <= _sw and 0 <= _wy <= _sh, (_wx, _wy, _sw, _sh)
+assert abs(_wx + app.winfo_width() / 2 - _sw / 2) <= 2, \
+    "window should be horizontally centered: x=%d w=%d screen=%d" % (
+        _wx, app.winfo_width(), _sw)
+assert abs(_wy + app.winfo_height() / 2 - _sh / 2) <= 2, \
+    "window should be vertically centered: y=%d h=%d screen=%d" % (
+        _wy, app.winfo_height(), _sh)
+print("Window centered OK: +%d+%d on %dx%d" % (_wx, _wy, _sw, _sh))
+
 app.withdraw()
 app.geometry("1140x820")
 app.update()
@@ -26,13 +40,17 @@ print("App instantiated OK | canvas %dx%d"
       % (app.canvas_map.winfo_width(), app.canvas_map.winfo_height()))
 
 # ---- 默认英文界面 ----
-assert "Scanner" in app.title(), app.title()
+assert "HD Doc" in app.title(), app.title()
 admin_txt = app.lbl_admin.cget("text")
 assert "Permission" in admin_txt, admin_txt
 print("Permission status: %s (is_admin=%s)" % (admin_txt, H.is_admin()))
 assert app.btn_start.cget("text") == "Start scan"
 assert app.combo_bs["values"][0] == "Auto", app.combo_bs["values"]
 assert "Whole disk at once" in app.combo_seg["values"][0]
+
+# ---- 目标下拉框禁止编辑 ----
+assert str(app.combo_target.cget("state")) == "readonly", \
+    "target dropdown must not be editable"
 
 # ---- 快速扫描控件（复选框默认关、抽样下拉禁用） ----
 assert hasattr(app, "var_quick") and app.var_quick.get() is False
@@ -167,37 +185,56 @@ assert "quick scan" in txt and "% of capacity" in txt, \
     "quick-scan summary should contain the coverage line"
 print("Quick-scan summary OK (with coverage line)")
 
-# ---- 语言切换：英 → 中 → 英，界面/日志/汇总整体重渲染 ----
-log_lines_before = len(app._log_entries)
+# ---- 语言切换：保存偏好 + 重启（测试里截断重启本身） ----
+import HD_Doc_core as core
+
+restarts = []
+orig_restart = H.restart_app
+H.restart_app = lambda: restarts.append(True)
+
+# 扫描中切换：只给界面内提示，不重启、不改语言
+class _LiveWorker:
+    def is_alive(self):
+        return True
+
+app.worker = _LiveWorker()
 app._set_language("zh")
 app.update()
-assert app.btn_start.cget("text") == "▶ 开始扫描", app.btn_start.cget("text")
-assert app.combo_bs["values"][0] == "自动", app.combo_bs["values"]
-tabs = [app.nb.tab(t, "text") for t in app.nb.tabs()]
-assert "fio 日志" in tabs, tabs
-assert "热力图" in app.canvas_map.master.cget("text"), \
-    app.canvas_map.master.cget("text")
-assert "扫描模式" in app.txt_summary.get("1.0", "end")
-assert len(app._log_entries) == log_lines_before, "切换语言不应丢失日志条目"
-assert app.txt_log.get("1.0", "end").count("\n") >= log_lines_before
-assert len(app.cells) == N_SEG, "切换语言后热力图应恢复"
-assert app.cells[0]["errors"] == 2, "切换语言后单元格数据应恢复"
-app._set_language("en")
-app.update()
-assert app.btn_start.cget("text") == "Start scan"
-assert "quick scan" in app.txt_summary.get("1.0", "end")
-print("Language switch OK (en <-> zh; UI/log/summary/heatmap restored)")
+assert restarts == [], "switching during a scan must not restart"
+assert core.get_language() == "en", "language must not change during a scan"
+assert "scan" in app.lbl_banner.cget("text").lower(), \
+    app.lbl_banner.cget("text")
+app.worker = None
+print("Language switch during scan blocked (in-app hint) OK")
 
-# ---- 关于窗口（作者留空） ----
+# 正常切换：持久化 + 请求重启；同一语言不重复重启
+app._set_language("zh")
+app.update()
+assert restarts == [True], "switching language should restart the app"
+assert core.get_language() == "zh"
+assert core.load_config().get("language") == "zh", \
+    "choice must persist to config"
+app._set_language("zh")
+assert restarts == [True], "same language must not restart again"
+
+H.restart_app = orig_restart
+core.set_language("en")   # 还原英文，避免影响后续用例
+app.var_lang.set("en")
+print("Language switch OK (persist + restart; blocked while scanning)")
+
+# ---- 关于窗口（一行简介，无作者行） ----
 app._show_about()
 app.update()
 about_win = [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"]
 assert about_win, "About window should open"
-about_txt = about_win[0].winfo_children()[0].winfo_children()[0].get("1.0", "end")
-assert "HD Tune Style Disk Error Scanner" in about_txt
-assert "Author:" in about_txt and about_txt.rstrip().endswith("Author:"), \
-    "author field should be left blank"
-print("About window OK (intro shown, author blank)")
+about_labels = [w for w in about_win[0].winfo_children()[0].winfo_children()
+                if w.winfo_class() == "Label"]
+assert about_labels, "About should show a one-line label"
+about_txt = about_labels[0].cget("text")
+assert "HD Doc" in about_txt, about_txt
+assert "Author" not in about_txt and "作者" not in about_txt, about_txt
+assert "\n" not in about_txt, "About must be a single line: %r" % about_txt
+print("About window OK (one-line intro, no author line)")
 
 # ---- 失败路径（不弹窗，走横幅） ----
 popped.clear()

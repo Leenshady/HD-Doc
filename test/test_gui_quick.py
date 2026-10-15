@@ -6,15 +6,15 @@
 import os, sys, time, types
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 os.environ["HDTUNE_LANG"] = "en"
-sys.path.insert(0, ".")
-import hdtune_gui as H
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import HD_Doc_gui as H
 
 FIO = "C:/Program Files/fio/fio.exe"
 BIG = os.path.abspath(os.path.join("..", "fio_test", "it_big.img"))
 assert os.path.isfile(BIG), "缺少 512MB 测试镜像，请先跑 test_integration.py"
 
 root = H.tk.Tk(); root.withdraw()
-app = H.HDTuneScanApp(); app.withdraw()
+app = H.HDDocApp(); app.withdraw()
 app.geometry("1140x820")
 app.canvas_map.winfo_width = lambda: 1100
 app.canvas_map.winfo_height = lambda: 700
@@ -81,15 +81,15 @@ print("汇总文本含覆盖率行 OK")
 # 导出按钮可用 + 导出写入报告（GUI 语言 = en）
 assert str(app.btn_export.cget("state")) == "normal"
 import tempfile
-exp = tempfile.mkdtemp(prefix="hdtune_gui_export_")
+exp = tempfile.mkdtemp(prefix="HD_Doc_gui_export_")
 app._export_report = lambda: H.write_reports(
-    os.path.join(exp, "hdtune_report_test"), app.summary)
+    os.path.join(exp, "HD_Doc_report_test"), app.summary)
 app._export_report()
-files = os.listdir(os.path.join(exp, "hdtune_report_test"))
+files = os.listdir(os.path.join(exp, "HD_Doc_report_test"))
 assert set(files) == {"segments.csv", "errors.csv", "summary.txt"}, files
-head = open(os.path.join(exp, "hdtune_report_test", "summary.txt"),
+head = open(os.path.join(exp, "HD_Doc_report_test", "summary.txt"),
             encoding="utf-8").read()
-assert "HD Tune Style Disk Error Scan Report" in head
+assert "HD Doc Disk Error Scan Report" in head
 print("GUI 导出 OK（英文报告，3 个文件）")
 
 app._cancel_timers()
@@ -99,7 +99,7 @@ app.destroy()
 # 导致 "main thread is not in main loop"，快速/全段两条路径都要覆盖）----
 SMALL = os.path.abspath(os.path.join("..", "fio_test", "it_small.img"))
 assert os.path.isfile(SMALL), "缺少 8MB 测试镜像"
-app2 = H.HDTuneScanApp(); app2.withdraw()
+app2 = H.HDDocApp(); app2.withdraw()
 app2.geometry("1140x820")
 app2.canvas_map.winfo_width = lambda: 1100
 app2.canvas_map.winfo_height = lambda: 700

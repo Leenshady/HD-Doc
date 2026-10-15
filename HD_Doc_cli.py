@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hdtune_cli.py —— 命令行模式（只依赖 hdtune_core，不 import tkinter / GUI）
+HD_Doc_cli.py —— 命令行模式（只依赖 HD_Doc_core，不 import tkinter / GUI）
 
-用法由入口 hdtune_scan.py 解析参数后调用 cli_main(args)；
-也可以直接 python hdtune_scan.py --cli --target <目标> ...
+用法由入口 HD_Doc.py 解析参数后调用 cli_main(args)；
+也可以直接 python HD_Doc.py --cli --target <目标> ...
 
 CLI 输出固定为英文（与界面语言无关）。扫描结果默认不落盘，
 加 --export [DIR] 才把报告（segments.csv / errors.csv / summary.txt）
-写入 DIR 下的 hdtune_report_<时间戳>/ 目录。
+写入 DIR 下的 HD_Doc_report_<时间戳>/ 目录。
 """
 
 import os
@@ -16,9 +16,9 @@ import sys
 import time
 from datetime import datetime
 
-import hdtune_core as core                      # 业务逻辑全部经 core
-from hdtune_core import *                       # 常用名直接可用（调用点不变）
-from hdtune_core import (_cli_bind_parent_console,  # 下划线名需显式导入
+import HD_Doc_core as core                      # 业务逻辑全部经 core
+from HD_Doc_core import *                       # 常用名直接可用（调用点不变）
+from HD_Doc_core import (_cli_bind_parent_console,  # 下划线名需显式导入
                          _ensure_console,
                          set_language)
 
@@ -224,7 +224,7 @@ def cli_main(args):
     # 报告按需导出：未指定 --export 时不写任何文件
     export_dir = getattr(args, "export", None)
     if export_dir is not None:
-        outdir = os.path.join(export_dir or ".", "hdtune_report_%s"
+        outdir = os.path.join(export_dir or ".", "HD_Doc_report_%s"
                               % datetime.now().strftime("%Y%m%d_%H%M%S"))
         files = write_reports(outdir, summary, lang="en")
         print("\nReport exported to:")

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """test_cli_stop.py —— CLI 模式真实中途停止回归（用户 bug：停止后误报磁盘错误）
 
-方案：进程内驱动 hdtune_cli.cli_main，看门狗线程在扫描跑起来后调用
+方案：进程内驱动 HD_Doc_cli.cli_main，看门狗线程在扫描跑起来后调用
 _thread.interrupt_main() —— 与 Ctrl+C 等价（主线程收到 KeyboardInterrupt）。
 扫描为真实 fio + 真实文件（256MB / 4K 块，约 5s，停止点在 2s）。
 
@@ -21,10 +21,10 @@ import threading
 import time
 import _thread
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
-import hdtune_cli  # noqa: E402
-import hdtune_core as core  # noqa: E402
+import HD_Doc_cli  # noqa: E402
+import HD_Doc_core as core  # noqa: E402
 
 TARGET = os.path.join(HERE, "exe_test_256mb.bin")
 if not os.path.isfile(TARGET):
@@ -55,7 +55,7 @@ def watcher():
 t = threading.Thread(target=watcher, daemon=True)
 t.start()
 t0 = time.time()
-rc = hdtune_cli.cli_main(args)
+rc = HD_Doc_cli.cli_main(args)
 elapsed = time.time() - t0
 buf.flush()
 sys.stdout = old

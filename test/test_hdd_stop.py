@@ -19,10 +19,10 @@ import threading
 import time
 import _thread
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
-import hdtune_cli  # noqa: E402
-import hdtune_core as core  # noqa: E402
+import HD_Doc_cli  # noqa: E402
+import HD_Doc_core as core  # noqa: E402
 
 TARGET = "\\\\.\\PhysicalDrive0"
 
@@ -47,7 +47,7 @@ def watcher():
 t = threading.Thread(target=watcher, daemon=True)
 t.start()
 t0 = time.time()
-rc = hdtune_cli.cli_main(args)
+rc = HD_Doc_cli.cli_main(args)
 elapsed = time.time() - t0
 buf.flush()
 sys.stdout = old

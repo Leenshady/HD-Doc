@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hdtune_core.py —— 业务逻辑层（零 UI 依赖：不 import tkinter，不弹任何窗口）
+HD_Doc_core.py —— 业务逻辑层（零 UI 依赖：不 import tkinter，不弹任何窗口）
 
 职责
   - 管理员权限检测与自动提权（is_admin / request_elevation）
@@ -14,7 +14,7 @@ hdtune_core.py —— 业务逻辑层（零 UI 依赖：不 import tkinter，不
   - fio 扫描引擎 FioScanner（分段执行 / 流式 JSON 解析 / 段级统计）
   - 报告导出 write_reports
 
-本模块被 hdtune_cli（命令行）与 hdtune_gui（tkinter 界面）共同依赖；
+本模块被 HD_Doc_cli（命令行）与 HD_Doc_gui（tkinter 界面）共同依赖；
 CLI 路径只 import 本模块，不会触碰任何 UI 代码。
 """
 
@@ -66,513 +66,65 @@ IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400
 # ---------------------------------------------------------------- i18n 多语言
 # GUI 界面语言：默认英文，可切换中文；CLI 固定英文（cli_main 入口
 # set_language("en")）。语言选择持久化在用户配置目录：
-#   Windows: %APPDATA%\hdtune_scan\config.json
-#   其他:    ~/.config/hdtune_scan/config.json
+#   Windows: %APPDATA%\HD_Doc\config.json
+#   其他:    ~/.config/HD_Doc/config.json
+# 文案表独立于代码，放在本目录旁的 lang/（en.json / zh.json），运行时
+# 加载；新增语言只需加一个 JSON 并把码加进 LANGUAGES。
 # 环境变量 HDTUNE_LANG=en|zh 可临时覆盖（测试用，不落盘）。
 LANGUAGES = ("en", "zh")
 DEFAULT_LANGUAGE = "en"
 _LANGUAGE = DEFAULT_LANGUAGE
 _LANG_LOADED = False
 
-_I18N = {
-    # ---------------- 英文（默认） ----------------
-    "en": {
-        # 状态图例
-        "status.ok": "OK",
-        "status.slow": "Slow",
-        "status.bad": "Very slow",
-        "status.error": "Read error",
-        "status.pending": "Pending",
-        # 总线类型（专有名词不翻译，仅通用项）
-        "bus.unknown": "Unknown",
-        "bus.virtual": "Virtual",
-        "bus.file_virtual": "File-backed virtual",
-        "bus.storage_space": "Storage Spaces",
-        # errno 含义
-        "errno.1": "EPERM permission denied",
-        "errno.2": "ENOENT file/device not found",
-        "errno.5": "EIO read error (bad block or media failure)",
-        "errno.13": "EACCES access denied (permission or path issue)",
-        "errno.22": "EINVAL invalid argument (misaligned offset or direct IO unsupported)",
-        "errno.28": "ENOSPC no space left",
-        "errno.unknown": "Unknown error",
-        # 通用
-        "unknown": "Unknown",
-        "none": "(none)",
-        # 异常 / 提权
-        "err.uac_cancelled": "UAC elevation confirmation cancelled by user",
-        "err.shellexec_failed": "ShellExecuteExW failed (err={err})",
-        "err.no_sudo": "sudo not found",
-        "err.parse_bs": "Cannot parse block size: {text!r}",
-        "err.bs_too_small": "Block size cannot be smaller than 512 bytes",
-        # FioScanner 运行时日志
-        "log.scan_range_small": "Scan range {size} is smaller than block size {bs}; block size adjusted to {new_bs}",
-        "log.lat_unit_ns": "Detected lat log in nanoseconds; converted to microseconds",
-        "log.segment_fio_error": "Segment {i}/{n} fio reported error: {name} (errno {code})",
-        "log.segment_stopped": "Segment {i}/{n} stopped by user request (read {done}/{total} blocks)",
-        "log.unscanned_aborted": "Unscanned (job aborted after reading {n} blocks, errno {code})",
-        "log.unstarted_segments": "{size} in not-yet-started segments counted as unscanned due to stop",
-        "errblk.eio": "fio read failure EIO (offset {off})",
-        # 报告（write_reports）
-        "rep.title": "HD Tune Style Disk Error Scan Report",
-        "rep.generated": "Generated: {ts}",
-        "rep.target": "Target: {t}",
-        "rep.bs": "Block size: {bs}",
-        "rep.ioengine": "IO engine: {e} (direct={d})",
-        "rep.capacity": "Disk capacity: {sz}",
-        "rep.mode_whole": "Whole disk in one pass",
-        "rep.mode_segmented": "Segmented scan ({n} segments)",
-        "rep.mode": "Scan mode: {mode}",
-        "rep.mode_quick": "Scan mode: quick scan ({n} regions sampled, covering {cov}, {pct:.2f}% of capacity)",
-        "rep.note_quick": "Note: quick scan reads only the head sample of each region; latency stats below are based on samples.",
-        "rep.state_stopped": "Scan state: stopped by user (results are incomplete; uncovered areas are not errors)",
-        "rep.results": "-- Results --",
-        "rep.n_blocks": "Total blocks: {n}",
-        "rep.ok": "OK: {n}",
-        "rep.slow": "Slow (>{thr:.2f}ms): {n}",
-        "rep.bad": "Very slow (>{thr:.2f}ms): {n}",
-        "rep.read_errors": "Read error blocks: {n} (fio error segments {es}, unlocated error lines {ul})",
-        "rep.fio_errno": "fio error code: {code} {name}",
-        "rep.unscanned_stopped": "Unscanned bytes: {sz} (stopped by user, expected)",
-        "rep.unscanned_failed": "Uncovered bytes: {sz} (a segment failed early; scan incomplete)",
-        "rep.unread_tail": "Unread tail: {sz} (less than one block; fio skips it; not an error)",
-        "rep.latency": "-- Latency --",
-        "rep.median": "Median: {v:.3f} ms",
-        "rep.mean": "Mean: {v:.3f} ms",
-        "rep.p99": "P99: {v:.3f} ms",
-        "rep.max": "Max: {v:.3f} ms",
-        "rep.elapsed": "-- Elapsed --",
-        "rep.total_time": "Total time: {d}",
-        "rep.aborted_note": "Note: scan was aborted by user; results are incomplete.",
-        "rep.threshold_note": "-- Thresholds --",
-        "rep.threshold_detail": "Thresholds adapt to the overall block latency median: slow > max(median x3, 10ms), very slow > max(median x8, 100ms).",
-        "rep.err_detail": "-- Error block details --",
-        "rep.err_line": "Block #{i}  offset {off}  {desc}",
-        "rep.csv_seg_header": "Segment,Start offset (bytes),Segment size (bytes),Blocks,Actual I/Os,Expected I/Os,Errno,Errno meaning,Median latency (ms),Max latency (ms)",
-        "rep.csv_err_header": "Block,Offset (bytes),Offset (readable),Description",
-        # ---------------- GUI 界面 ----------------
-        "gui.title": "HD Tune Style Disk Error Scanner (fio + tkinter, read-only) v{ver}",
-        "gui.menu.language": "Language",
-        "gui.menu.help": "Help",
-        "gui.menu.about": "About",
-        "gui.about.title": "About",
-        "gui.about.body": ("HD Tune Style Disk Error Scanner\n"
-                           "\n"
-                           "A read-only disk error scanner built on fio.\n"
-                           "\n"
-                           "Features\n"
-                           "- Segmented scanning with a live latency heatmap\n"
-                           "- Quick scan (HD Tune Quick Scan style): head sample per region\n"
-                           "- Adaptive slow / very-slow thresholds from the block latency median\n"
-                           "- Error block list with offsets\n"
-                           "- Reports are exported on demand (GUI button / CLI --export)\n"
-                           "- Read-only: never writes to the disk\n"
-                           "\n"
-                           "Usage\n"
-                           "- GUI: run without arguments\n"
-                           "- CLI: hdtune_scan.exe --cli --target <target> [--export DIR]\n"
-                           "\n"
-                           "Author: "),
-        "gui.target": "Target:",
-        "gui.refresh": "Refresh drives",
-        "gui.browse_file": "Browse file...",
-        "gui.bs": "Block size:",
-        "gui.engine": "IO engine:",
-        "gui.direct": "Direct IO",
-        "gui.segment": "Segment:",
-        "gui.quick": "Quick scan",
-        "gui.sample": "Sample:",
-        "gui.fio_path": "fio path:",
-        "gui.browse": "Browse...",
-        "gui.start": "Start scan",
-        "gui.stop": "Stop",
-        "gui.export": "Export report",
-        "gui.hint": ("Tip: smaller segments give a more live heatmap but cost about 1s "
-                     "startup each; whole-disk is fastest but the map appears only at "
-                     "the end; quick scan reads only the head sample of each region "
-                     "for a fast full-disk checkup"),
-        "gui.perm_checking": "Permission: checking...",
-        "gui.perm_admin": "Permission: administrator",
-        "gui.perm_standard": "Permission: standard user (admin required for physical disks)",
-        "gui.relaunch": "Restart as administrator",
-        "gui.bs_values": "Auto,512K,1M,2M,4M,8M,16M,32M,64M",
-        "gui.seg_values": ("Whole disk at once (fastest),512M,1G,2G,4G,8G,16G,"
-                           "32G,64G"),
-        "gui.sample_values": "1M,2M,4M,8M,16M,32M,64M",
-        "gui.map_title": ("Segment heatmap (horizontal - one cell = one scan segment - "
-                          "color = median read latency of that segment)"),
-        "gui.progress": "Progress: --",
-        "gui.speed": "Speed: --",
-        "gui.elapsed": "Elapsed: --",
-        "gui.eta": "ETA: --",
-        "gui.errors": "Errors: {n}",
-        "gui.state_ready": "Ready",
-        "gui.state_scanning": "Scanning...",
-        "gui.state_stopping": "Stopping...",
-        "gui.state_done": "Done",
-        "gui.state_done_aborted": "Done (aborted)",
-        "gui.state_failed": "Failed",
-        "gui.state_stopped": "Stopped",
-        "gui.errors_none": "Errors: none",
-        "gui.errors_code": "Errors: {name}({code})",
-        "gui.progress_pct": "Progress: {pct:.1f}%",
-        "gui.progress_read": "Read {sz}",
-        "gui.speed_fmt": "Speed: {v}",
-        "gui.elapsed_fmt": "Elapsed: {v}",
-        "gui.eta_fmt": "ETA: {v}",
-        "gui.tab_log": "fio log",
-        "gui.tab_errors": "Error blocks",
-        "gui.tab_summary": "Summary",
-        "gui.col_block": "Block",
-        "gui.col_offset": "Offset",
-        "gui.col_desc": "Description",
-        "gui.hover_region": "Region #{i}/{n} | offset {off}",
-        "gui.hover_segment": "Segment #{i}/{n} | offset {off}",
-        "gui.hover_sample": " | sample {sz}",
-        "gui.hover_size": " | size {sz}",
-        "gui.hover_region_span": "/region {sz}",
-        "gui.hover_to_end": " | to end",
-        "gui.hover_blocks": " | block {b} on | read {n} blocks | errors {e}",
-        "gui.hover_median": " | median latency {v:.2f} ms",
-        "gui.hover_max": " | max {v:.2f} ms",
-        "gui.log.admin_ok": "Running with administrator rights; physical disks can be scanned",
-        "gui.log.not_admin": ("Not running as administrator. Scanning physical disks "
-                              "(\\\\.\\PhysicalDriveN) requires administrator rights, "
-                              "otherwise fio cannot open the device and every block "
-                              "reports \"failed to open file\"."),
-        "gui.log.elevate_requested": "Elevation requested; this process will exit...",
-        "gui.log.no_pythonw": ("pythonw.exe not found; a console window may appear "
-                               "after elevation"),
-        "gui.log.bs_clamped": "Block size exceeds disk capacity; adjusted to {sz}",
-        "gui.log.quick_plan": ("Quick scan: {n} regions, {sample} sampled each "
-                               "(total {total}, {pct:.2f}% of capacity)"),
-        "gui.log.quick_no_size": ("Quick scan needs a known capacity to place samples "
-                                  "evenly; capacity unknown, falling back to a single "
-                                  "full pass"),
-        "gui.log.capacity_plan": "Capacity {sz} | {n} segments | about {b} blocks",
-        "gui.log.no_size_map": ("Could not query target capacity; heatmap unavailable "
-                                "(stats only); fio will still auto-detect the device "
-                                "size and complete the scan"),
-        "gui.log.segment": "Segment {i}/{n} offset {off}{extra}",
-        "gui.log.segment_size": "  size {sz}",
-        "gui.log.segment_to_end": " (to end)",
-        "gui.log.segment_sampled": " (sampled)",
-        "gui.log.start_scan": "Scan started: {t} | block size {bs} | {n} {kind} | fio={fio}",
-        "gui.log.kind_region": "regions (quick scan)",
-        "gui.log.kind_segment": "segments",
-        "gui.log.stop_requested": ("Stop requested. Note: fio's per-block latency log "
-                                   "is written only on normal exit; after a forced "
-                                   "kill the current segment's heatmap data is lost "
-                                   "(progress/error counts are kept up to the last "
-                                   "second before the stop)"),
-        "gui.log.no_engine_probe": "Cannot probe the fio engine list; skipping engine check",
-        "gui.log.exported": "Report exported: {d}",
-        "gui.log.readonly_note": "Read-only scan of {t}; nothing will be written to the disk",
-        "gui.log.fio_missing": ("fio executable not found: {f}. "
-                                "Windows: winget install fio.fio"),
-        "gui.log.no_size_degraded": ("Cannot query the capacity of {t}; falling back to "
-                                     "whole-disk-at-once: no live progress/speed/ETA, "
-                                     "the heatmap appears only after the scan, and "
-                                     "stopping midway loses per-block data"),
-        "gui.msg.no_target": "Please select or enter a scan target first",
-        "gui.msg.admin_needed_title": "Administrator rights required",
-        "gui.msg.admin_needed": ("Scanning {t} requires administrator rights\n"
-                                 "(fio must be elevated to open \\\\.\\PhysicalDriveN).\n\n"
-                                 "Restart as administrator now?\n"
-                                 "(The window closes after the UAC confirmation; "
-                                 "start the scan in the new window)"),
-        "gui.msg.elevate_failed_title": "Elevation failed",
-        "gui.msg.elevate_failed": ("Cannot restart as administrator: {err}\n\n"
-                                   "Right-click this program and choose "
-                                   "\"Run as administrator\"."),
-        "gui.msg.engine_bad_title": "IO engine unavailable",
-        "gui.msg.engine_bad": ("Current fio does not support the '{e}' engine; "
-                               "scan not started.\n\n"
-                               "Engines actually supported by this fio:\n{list}\n\n"
-                               "Note: libaio / posixaio are native Linux engines; the "
-                               "Windows build of fio does not include them and fails "
-                               "with \"failed to load engine\". On Windows use {win}."),
-        "gui.msg.exit_title": "Exit",
-        "gui.msg.exit_scanning": "A scan is in progress. Exit anyway?",
-        "gui.msg.param_error_title": "Invalid parameter",
-        "gui.banner.clean": ("Scan complete: {ok}/{n} blocks OK, {slow} slow, "
-                             "{bad} very slow, {err} read errors."),
-        "gui.banner.errors": ("Scan found {n} error blocks (fio error segments {es}). "
-                              "The disk may have physical damage; back up important "
-                              "data immediately. See the Error blocks tab."),
-        "gui.banner.stopped_with_errors": ("Scan stopped by user. {n} error blocks were "
-                                           "found before the stop (fio error segments "
-                                           "{es}); see the Error blocks tab."),
-        "gui.banner.failed": "Scan failed: {msg}",
-        "gui.sum.target": "Target       : {t}",
-        "gui.sum.bs": "Block size   : {bs} ({n} blocks)",
-        "gui.sum.ioengine": "IO engine    : {e} (direct={d})",
-        "gui.sum.capacity": "Disk capacity: {sz}",
-        "gui.sum.mode_quick": ("Scan mode    : quick scan ({n} regions sampled, "
-                               "covering {cov}, {pct:.2f}% of capacity)"),
-        "gui.sum.state_stopped": ("Scan state   : stopped by user "
-                                  "(uncovered areas are not errors)"),
-        "gui.sum.elapsed": "Elapsed      : {d}",
-        "gui.sum.ok": "OK           : {n}",
-        "gui.sum.slow": "Slow         : {n} (> {thr:.2f} ms)",
-        "gui.sum.bad": "Very slow    : {n} (> {thr:.2f} ms)",
-        "gui.sum.read_errors": ("Read errors  : {n} blocks (fio error segments {es}, "
-                                "unlocated error lines {ul})"),
-        "gui.sum.fio_errno": "fio errno    : {code} {name}",
-        "gui.sum.unscanned_stopped": "Unscanned    : {sz} (stopped by user, expected)",
-        "gui.sum.uncovered": ("Uncovered    : {sz} (a segment failed early; "
-                              "scan incomplete!)"),
-        "gui.sum.unread_tail": ("Unread tail  : {sz} (less than one block; fio skips "
-                                "it; not an error)"),
-        "gui.sum.median": "Median latency: {v:.3f} ms",
-        "gui.sum.mean": "Mean         : {v:.3f} ms",
-        "gui.sum.p99": "P99          : {v:.3f} ms",
-        "gui.sum.max": "Max          : {v:.3f} ms",
-        "gui.sum.aborted_note": "Note: the scan was aborted; results below are incomplete.",
-        "gui.sum.threshold_note": ("Thresholds: slow > max(median x3, 10ms), "
-                                   "very slow > max(median x8, 100ms)."),
-    },
-    # ---------------- 中文 ----------------
-    "zh": {
-        "status.ok": "正常",
-        "status.slow": "偏慢",
-        "status.bad": "很慢",
-        "status.error": "读取错误",
-        "status.pending": "未扫描",
-        "bus.unknown": "未知",
-        "bus.virtual": "虚拟",
-        "bus.file_virtual": "文件虚拟",
-        "bus.storage_space": "存储空间",
-        "errno.1": "EPERM 权限不足",
-        "errno.2": "ENOENT 文件/设备不存在",
-        "errno.5": "EIO 读取错误（坏块或介质故障）",
-        "errno.13": "EACCES 拒绝访问（权限或路径问题）",
-        "errno.22": "EINVAL 参数错误（offset 未对齐或直接 IO 不支持）",
-        "errno.28": "ENOSPC 空间不足",
-        "errno.unknown": "未知错误",
-        "unknown": "未知",
-        "none": "（无）",
-        "err.uac_cancelled": "用户取消了 UAC 提权确认",
-        "err.shellexec_failed": "ShellExecuteExW 失败 (err={err})",
-        "err.no_sudo": "未找到 sudo",
-        "err.parse_bs": "无法解析块大小: {text!r}",
-        "err.bs_too_small": "块大小不能小于 512 字节",
-        "log.scan_range_small": "扫描范围 {size} 小于块大小 {bs}，块大小已调整为 {new_bs}",
-        "log.lat_unit_ns": "检测到 lat 日志单位为纳秒，已换算为微秒",
-        "log.segment_fio_error": "段 {i}/{n} fio 报告错误: {name}（错误码 {code}）",
-        "log.segment_stopped": "段 {i}/{n} 已按用户请求停止（已读 {done}/{total} 块）",
-        "log.unscanned_aborted": "未扫描（任务在读取 {n} 块后中止，错误码 {code}）",
-        "log.unstarted_segments": "有 {size} 位于尚未启动的段，已按停止计入未扫描",
-        "errblk.eio": "fio 读失败 EIO（偏移 {off}）",
-        "rep.title": "HD Tune 风格磁盘错误扫描报告",
-        "rep.generated": "生成时间: {ts}",
-        "rep.target": "目标: {t}",
-        "rep.bs": "块大小: {bs}",
-        "rep.ioengine": "IO 引擎: {e} (direct={d})",
-        "rep.capacity": "磁盘容量: {sz}",
-        "rep.mode_whole": "整盘一次",
-        "rep.mode_segmented": "分段扫描（{n} 段）",
-        "rep.mode": "扫描模式: {mode}",
-        "rep.mode_quick": "扫描模式: 快速扫描（抽样 {n} 区域，覆盖 {cov}，占容量 {pct:.2f}%）",
-        "rep.note_quick": "注: 快速扫描只读每区域开头样本，以下延迟统计基于样本数据。",
-        "rep.state_stopped": "扫描状态: 用户主动停止（结果为不完整数据，未覆盖区域不是错误）",
-        "rep.results": "-- 结果 --",
-        "rep.n_blocks": "总块数: {n}",
-        "rep.ok": "正常: {n}",
-        "rep.slow": "偏慢(>{thr:.2f}ms): {n}",
-        "rep.bad": "很慢(>{thr:.2f}ms): {n}",
-        "rep.read_errors": "读取错误块: {n}（fio 报错段 {es}，未定位错误行 {ul}）",
-        "rep.fio_errno": "fio 错误码: {code} {name}",
-        "rep.unscanned_stopped": "未扫描字节: {sz}（已主动停止，属预期）",
-        "rep.unscanned_failed": "未覆盖字节: {sz}（有段提前失败，扫描不完整）",
-        "rep.unread_tail": "未读尾巴: {sz}（不足一个块的字节，fio 不读，非错误）",
-        "rep.latency": "-- 延迟统计 --",
-        "rep.median": "中位数: {v:.3f} ms",
-        "rep.mean": "平均值: {v:.3f} ms",
-        "rep.p99": "P99: {v:.3f} ms",
-        "rep.max": "最大值: {v:.3f} ms",
-        "rep.elapsed": "-- 耗时 --",
-        "rep.total_time": "总耗时: {d}",
-        "rep.aborted_note": "注意: 扫描被用户中止，结果为不完整数据。",
-        "rep.threshold_note": "-- 阈值说明 --",
-        "rep.threshold_detail": "阈值基于全体块延迟中位数自适应计算: 偏慢 > max(中位数x3, 10ms)，很慢 > max(中位数x8, 100ms)。",
-        "rep.err_detail": "-- 错误块明细 --",
-        "rep.err_line": "块 #{i}  偏移 {off}  {desc}",
-        "rep.csv_seg_header": "段号,起始偏移(字节),段大小(字节),块数,实际I/O数,预期I/O数,错误码(errno),错误含义,延迟中位数(ms),最大延迟(ms)",
-        "rep.csv_err_header": "块号,偏移(字节),偏移(可读),说明",
-        # ---------------- GUI 界面 ----------------
-        "gui.title": "HD Tune 风格磁盘错误扫描器（fio + tkinter · 只读）v{ver}",
-        "gui.menu.language": "语言",
-        "gui.menu.help": "帮助",
-        "gui.menu.about": "关于",
-        "gui.about.title": "关于",
-        "gui.about.body": ("HD Tune 风格磁盘错误扫描器\n"
-                           "\n"
-                           "基于 fio 的只读磁盘错误扫描器。\n"
-                           "\n"
-                           "功能特性\n"
-                           "- 分段扫描，实时延迟热力图\n"
-                           "- 快速扫描（类 HD Tune Quick Scan）：每区只读开头样本\n"
-                           "- 依据全体块延迟中位数自适应的偏慢/很慢阈值\n"
-                           "- 错误块列表（含偏移）\n"
-                           "- 报告按需导出（GUI 导出按钮 / CLI --export）\n"
-                           "- 只读：绝不向磁盘写入任何数据\n"
-                           "\n"
-                           "用法\n"
-                           "- GUI：不带参数直接运行\n"
-                           "- CLI：hdtune_scan.exe --cli --target <目标> [--export 目录]\n"
-                           "\n"
-                           "作者："),
-        "gui.target": "目标:",
-        "gui.refresh": "刷新磁盘",
-        "gui.browse_file": "浏览文件…",
-        "gui.bs": "块大小:",
-        "gui.engine": "IO 引擎:",
-        "gui.direct": "直接 IO",
-        "gui.segment": "分段:",
-        "gui.quick": "快速扫描",
-        "gui.sample": "抽样:",
-        "gui.fio_path": "fio 路径:",
-        "gui.browse": "浏览…",
-        "gui.start": "▶ 开始扫描",
-        "gui.stop": "■ 停止",
-        "gui.export": "导出报告",
-        "gui.hint": ("提示: 分段越小热力图越实时，但每段约 1 秒启动开销；整盘最快但"
-                     "结束后才出图；快速扫描每区只读开头样本，适合全盘快速体检"),
-        "gui.perm_checking": "权限: 检测中…",
-        "gui.perm_admin": "权限: 管理员",
-        "gui.perm_standard": "权限: 标准用户（扫描物理磁盘需管理员）",
-        "gui.relaunch": "以管理员身份重启",
-        "gui.bs_values": "自动,512K,1M,2M,4M,8M,16M,32M,64M",
-        "gui.seg_values": "整盘一次（最快）,512M,1G,2G,4G,8G,16G,32G,64G",
-        "gui.sample_values": "1M,2M,4M,8M,16M,32M,64M",
-        "gui.map_title": "分段热力图（横向 · 每格 = 一个扫描段 · 颜色 = 该段读取延迟中位数）",
-        "gui.progress": "进度: --",
-        "gui.speed": "速度: --",
-        "gui.elapsed": "已用: --",
-        "gui.eta": "剩余: --",
-        "gui.errors": "错误: {n}",
-        "gui.state_ready": "就绪",
-        "gui.state_scanning": "扫描中…",
-        "gui.state_stopping": "正在停止…",
-        "gui.state_done": "完成",
-        "gui.state_done_aborted": "完成（中止）",
-        "gui.state_failed": "失败",
-        "gui.state_stopped": "已停止",
-        "gui.errors_none": "错误: 无",
-        "gui.errors_code": "错误: {name}({code})",
-        "gui.progress_pct": "进度: {pct:.1f}%",
-        "gui.progress_read": "已读 {sz}",
-        "gui.speed_fmt": "速度: {v}",
-        "gui.elapsed_fmt": "已用: {v}",
-        "gui.eta_fmt": "剩余: {v}",
-        "gui.tab_log": "fio 日志",
-        "gui.tab_errors": "错误块列表",
-        "gui.tab_summary": "汇总",
-        "gui.col_block": "块号",
-        "gui.col_offset": "偏移",
-        "gui.col_desc": "说明",
-        "gui.hover_region": "区域 #{i}/{n} | 偏移 {off}",
-        "gui.hover_segment": "段 #{i}/{n} | 偏移 {off}",
-        "gui.hover_sample": " | 抽样 {sz}",
-        "gui.hover_size": " | 大小 {sz}",
-        "gui.hover_region_span": "/区域 {sz}",
-        "gui.hover_to_end": " | 到末尾",
-        "gui.hover_blocks": " | 块 {b} 起 | 已读 {n} 块 | 错误 {e}",
-        "gui.hover_median": " | 延迟中位数 {v:.2f} ms",
-        "gui.hover_max": " | 最大 {v:.2f} ms",
-        "gui.log.admin_ok": "已以管理员权限运行，可扫描物理磁盘",
-        "gui.log.not_admin": ("当前未以管理员身份运行。扫描物理磁盘"
-                              "（\\\\.\\PhysicalDriveN）需要管理员权限，"
-                              "否则 fio 打不开设备，每个块都会报 "
-                              "“failed to open file”。"),
-        "gui.log.elevate_requested": "已申请提权重启，本进程即将退出…",
-        "gui.log.no_pythonw": "未找到 pythonw.exe，提权重启后可能出现命令窗口",
-        "gui.log.bs_clamped": "块大小超过磁盘容量，已调整为 {sz}",
-        "gui.log.quick_plan": ("快速扫描：{n} 个区域，每区抽样 {sample}"
-                               "（共 {total}，占容量 {pct:.2f}%）"),
-        "gui.log.quick_no_size": ("快速扫描需要已知容量来均匀布点；未能查询到容量，"
-                                  "退化为整盘一次扫描"),
-        "gui.log.capacity_plan": "容量 {sz} | {n} 段 | 预计 {b} 块",
-        "gui.log.no_size_map": ("未能查询到目标容量，热力图不可用（仅显示统计）；"
-                                "fio 仍会自动探测设备大小完成扫描"),
-        "gui.log.segment": "段 {i}/{n} 偏移 {off}{extra}",
-        "gui.log.segment_size": "  大小 {sz}",
-        "gui.log.segment_to_end": "（到末尾）",
-        "gui.log.segment_sampled": "（抽样）",
-        "gui.log.start_scan": "开始扫描: {t} | 块大小 {bs} | {n} {kind} | fio={fio}",
-        "gui.log.kind_region": "区域（快速扫描）",
-        "gui.log.kind_segment": "段",
-        "gui.log.stop_requested": ("已请求停止。注意：fio 的逐块延迟日志仅在正常退出时写入，"
-                                   "强杀后当前段的热力图数据会丢失（进度/错误计数保留到"
-                                   "停止前最后一秒）"),
-        "gui.log.no_engine_probe": "无法探测 fio 引擎列表，跳过引擎校验",
-        "gui.log.exported": "报告已导出: {d}",
-        "gui.log.readonly_note": "将对 {t} 进行只读扫描，不会写入任何数据",
-        "gui.log.fio_missing": "找不到 fio 可执行文件：{f}。Windows: winget install fio.fio",
-        "gui.log.no_size_degraded": ("无法查询 {t} 的容量，退化为整盘一次扫描："
-                                     "无实时进度/速度/ETA，热力图需扫描结束后才生成，"
-                                     "中途停止会丢失逐块数据"),
-        "gui.msg.no_target": "请先选择或输入扫描目标",
-        "gui.msg.admin_needed_title": "需要管理员权限",
-        "gui.msg.admin_needed": ("扫描 {t} 需要管理员权限\n"
-                                 "（fio 必须提升权限才能打开 \\\\.\\PhysicalDriveN）。\n\n"
-                                 "是否立即以管理员身份重启本程序？\n"
-                                 "（UAC 确认后本窗口关闭，请在重启后的窗口中开始扫描）"),
-        "gui.msg.elevate_failed_title": "提权失败",
-        "gui.msg.elevate_failed": ("无法以管理员身份重启：{err}\n\n"
-                                   "请手动右键本程序 → “以管理员身份运行”。"),
-        "gui.msg.engine_bad_title": "IO 引擎不可用",
-        "gui.msg.engine_bad": ("当前 fio 不支持「{e}」引擎，扫描未开始。\n\n"
-                               "该 fio 实际支持的引擎：\n{list}\n\n"
-                               "说明：libaio / posixaio 是 Linux 原生引擎，\n"
-                               "Windows 版 fio 未编译它们，加载即报\n"
-                               "“failed to load engine”。Windows 请用 {win}。"),
-        "gui.msg.exit_title": "退出",
-        "gui.msg.exit_scanning": "扫描正在进行，确定退出吗？",
-        "gui.msg.param_error_title": "参数错误",
-        "gui.banner.clean": ("扫描完成：{ok}/{n} 块正常，{slow} 偏慢，"
-                             "{bad} 很慢，{err} 个读取错误。"),
-        "gui.banner.errors": ("扫描发现 {n} 个错误块（fio 报错段 {es}）。"
-                              "该盘存在物理损伤风险，建议立即备份重要数据。"
-                              "详见「错误块列表」。"),
-        "gui.banner.stopped_with_errors": ("扫描已由用户主动停止。停止前已发现 {n} 个错误块"
-                                           "（fio 报错段 {es}），详见「错误块列表」。"),
-        "gui.banner.failed": "扫描失败: {msg}",
-        "gui.sum.target": "目标      : {t}",
-        "gui.sum.bs": "块大小    : {bs}（共 {n} 块）",
-        "gui.sum.ioengine": "IO 引擎   : {e} (direct={d})",
-        "gui.sum.capacity": "磁盘容量  : {sz}",
-        "gui.sum.mode_quick": ("扫描模式  : 快速扫描（{n} 区域抽样，覆盖 {cov}，"
-                               "占容量 {pct:.2f}%）"),
-        "gui.sum.state_stopped": "扫描状态  : 用户主动停止（未覆盖区域不是错误）",
-        "gui.sum.elapsed": "总耗时    : {d}",
-        "gui.sum.ok": "正常      : {n}",
-        "gui.sum.slow": "偏慢      : {n}（> {thr:.2f} ms）",
-        "gui.sum.bad": "很慢      : {n}（> {thr:.2f} ms）",
-        "gui.sum.read_errors": ("读取错误  : {n} 块（fio 报错段 {es}，未定位错误行 {ul}）"),
-        "gui.sum.fio_errno": "fio 错误码: {code} {name}",
-        "gui.sum.unscanned_stopped": "未扫描字节: {sz}（已主动停止，属预期）",
-        "gui.sum.uncovered": "未覆盖字节: {sz}（有段提前失败，扫描不完整！）",
-        "gui.sum.unread_tail": "未读尾巴  : {sz}（不足一块，fio 不读，非错误）",
-        "gui.sum.median": "延迟中位数: {v:.3f} ms",
-        "gui.sum.mean": "平均      : {v:.3f} ms",
-        "gui.sum.p99": "P99       : {v:.3f} ms",
-        "gui.sum.max": "最大      : {v:.3f} ms",
-        "gui.sum.aborted_note": "注意：扫描被中止，以下为不完整结果。",
-        "gui.sum.threshold_note": "阈值说明：偏慢 > max(中位数×3, 10ms)，很慢 > max(中位数×8, 100ms)。",
-    },
-}
+def _lang_dir():
+    """语言文件目录：源码树里与模块同级；PyInstaller 打包后位于
+    sys._MEIPASS/lang（build_exe.py 以 --add-data "lang;lang" 打入）"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "lang")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "lang")
+
+
+def _load_languages():
+    """加载 lang/<code>.json 文案表（如 lang/en.json、lang/zh.json）。
+
+    新增语言只需放入对应 JSON 并把码加进 LANGUAGES，无需改代码。
+    文件缺失/损坏时该语言退化为空表，tr() 会逐键回退英文。
+    """
+    tables = {}
+    for lang in LANGUAGES:
+        path = os.path.join(_lang_dir(), "%s.json" % lang)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            tables[lang] = data if isinstance(data, dict) else {}
+        except Exception:
+            tables[lang] = {}
+    if not tables.get("en"):
+        sys.stderr.write("warning: no language file in %s; "
+                         "strings fall back to raw keys\n" % _lang_dir())
+    en_keys = set(tables.get("en", {}))
+    for lang in LANGUAGES:
+        if lang == "en":
+            continue
+        missing = en_keys - set(tables.get(lang, {}))
+        if missing:
+            sys.stderr.write("warning: lang/%s.json missing %d key(s): %s\n"
+                             % (lang, len(missing),
+                                ", ".join(sorted(missing)[:8])))
+    return tables
+
+
+_I18N = _load_languages()
 
 
 def _config_dir():
     """用户配置目录（语言选择等持久化）"""
     if IS_WIN:
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        return os.path.join(base, "hdtune_scan")
+        return os.path.join(base, "HD_Doc")
     base = (os.environ.get("XDG_CONFIG_HOME")
             or os.path.join(os.path.expanduser("~"), ".config"))
-    return os.path.join(base, "hdtune_scan")
+    return os.path.join(base, "HD_Doc")
 
 
 def _config_path():
@@ -682,9 +234,6 @@ def bus_type_name(code):
 ETA_RE = re.compile(r"\[(\d+(?:\.\d+)?)%\]\[r=([\d.]+)([KMGT]?i?B)/s\]")
 OFFSET_RE = re.compile(r"offset[=:\s]*(\d+)", re.I)
 DRIVE_PATH_RE = re.compile(r"^\\\\\.\\", re.I)
-# windowsaio 引擎扫描普通文件时，每个 I/O 会往 stderr 打一条无害的
-# "failed to open file "C""（读取实际全部成功，error=0），过滤掉以免污染日志
-NOISE_RE = re.compile(r'failed to open file "?[A-Za-z]:?"?\s*$')
 
 # ---------------------------------------------------------------- 管理员权限
 def is_admin():
@@ -1741,7 +1290,7 @@ class FioScanner:
         # 冒号会让 fio 把路径拆成多个文件（见 _fio_target_arg），必须转换
         fname, fio_cwd = _fio_target_arg(target)
         cmd = [self.fio_path,
-               "--name=hdtune_scan",
+               "--name=HD_Doc_scan",
                "--filename=" + fname,
                "--rw=read",
                "--bs=%d" % bs,
@@ -1859,8 +1408,6 @@ class FioScanner:
             if not line:
                 break
             line = line.rstrip("\r\n")
-            if NOISE_RE.search(line):
-                continue  # windowsaio 扫文件时的无害噪音，读取实际成功
             state["lines"].append(line)
             if len(state["lines"]) > 2000:
                 state["lines"].pop(0)
@@ -1893,7 +1440,7 @@ class FioScanner:
                              new_bs=fmt_bytes(new_bs))})
             bs = new_bs
 
-        tmpdir = tempfile.mkdtemp(prefix="hdtune_scan_")
+        tmpdir = tempfile.mkdtemp(prefix="HD_Doc_scan_")
         if self._last_tmpdir:
             shutil.rmtree(self._last_tmpdir, ignore_errors=True)
         self._last_tmpdir = tmpdir

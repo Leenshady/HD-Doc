@@ -1,159 +1,95 @@
-# hdtune_scan
+# HD Doc
 
-A free, open-source, read-only disk health scanner inspired by HD Tune's Error Scan, built on the [fio](https://fio.readthedocs.io/) I/O engine with a Python/tkinter GUI.
+A read-only disk error scanner in the HD Tune style, built on the fio IO engine.
+It reads every block of a disk or image file, draws a heat map of read latency,
+and lists the blocks that fail to read. Nothing is ever written to the target.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue" alt="platform">
-  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="python">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
-  <img src="https://img.shields.io/badge/read--only-100%25-brightgreen" alt="read-only">
-</p>
-
-- **中文说明见 [README.zh-CN.md](README.zh-CN.md)**
-
-## What it does
-
-`hdtune_scan` reads every block of the selected disk (or disk image file) and renders the result as a grid heat map — exactly like HD Tune's Error Scan:
-
-| Color | Meaning |
-|-------|---------|
-| Green | Normal read speed |
-| Yellow | Slow (above the adaptive slow threshold) |
-| Red | Very slow (above the adaptive very-slow threshold) |
-| Dark red | Read error (fio reported an I/O error on that block) |
-| Gray | Not scanned yet |
-
-The tool is **strictly read-only**: it never writes a single byte to the target disk.
+Runs on Windows (admin rights required for physical disks) and Linux.
 
 ## Features
 
-- **HD Tune style heat map** — block-level grid, responsive layout that adapts to the segment count
-- **Quick scan** — HD Tune Quick Scan style: reads only a small sample at the head of each region and skips the rest (fast full-disk health check)
-- **Adaptive thresholds** — slow/very-slow thresholds are derived from the measured median latency (`median x N` with configurable floors), so they work for both HDDs and SSDs
-- **Error block list** — every failing block is listed with its offset, errno name, and status; per-segment error counts are shown in the heat map
-- **On-demand export** — nothing is written to disk unless you ask for it:
-  - CLI: `--export [DIR]` writes `segments.csv`, `errors.csv` and `summary.txt` into `DIR/hdtune_report_<timestamp>/`
-  - GUI: an *Export* button asks for a directory and writes the same three files
-- **GUI internationalization** — the GUI ships in English by default and can switch to Chinese at runtime (the choice is remembered); the CLI output is always English for scripts and logs
-- **No popup spam** — scan results, warnings and export confirmations are shown as in-window banners and log lines; only two confirm dialogs remain (elevation consent and quit confirmation)
-- **Automatic elevation** — scanning `\\.\PhysicalDriveN` requires administrator rights; the tool requests UAC elevation automatically (`--no-elevate` or `HDTUNE_NO_AUTO_ELEVATE=1` disables this)
-- **Resizable window** — the whole layout scales with the window; the heat map reflows automatically
-- **Standalone Windows build** — a single `.exe` (bundles `fio.exe` when found at build time), no Python installation needed on the target machine
-
-## Requirements
-
-- Windows 10/11 (uses the `windowsaio` fio engine)
-- Python 3.9+ with tkinter (only for running from source / building the GUI)
-- [fio](https://fio.readthedocs.io/) — either on `PATH` or bundled in the packaged `.exe`
-- Administrator rights when scanning physical disks (`\\.\PhysicalDriveN`)
+- Block-level heat map: each cell is one scan segment, colored by latency
+  against adaptive thresholds (median-based, so slow disks are not all red)
+- Error block list with errno interpretation
+- Quick scan: reads only a head sample of each region, like HD Tune Quick Scan
+- On-demand reports: nothing is saved unless you export (segments.csv,
+  errors.csv, summary.txt)
+- GUI (tkinter) and CLI from the same code base; GUI is bilingual
+  (English default, Chinese switchable, choice remembered)
+- Read-only by design: no writes to the target at any point
 
 ## Usage
 
-### GUI mode
-
-Double-click `hdtune_scan.exe`, or run:
+GUI:
 
 ```
-python hdtune_scan.py
+python HD_Doc.py
 ```
 
-Pick a target (physical drive or image file), choose the block size, segment size (0 = whole disk at once) or the quick scan mode, then press **Start**.
+Pick a target from the dropdown, choose block size / segment size, press
+**Start scan**. Switch language from the *Language* menu (the program
+restarts to reload the interface).
 
-Switch the interface language via **Language → English / 中文** in the menu bar. Program info is available under **Help → About**.
-
-### CLI mode (English output only)
-
-```
-python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --bs 4M
-python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --quick
-python hdtune_scan.py --cli --target test.img --segment-gb 4 --export ./out
-python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --limit-mb 64   # first 64 MB only
-python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --no-elevate   # no auto UAC
-python hdtune_scan.py --version
-```
-
-Without `--export`, no files are written at all — results are printed to the console only.
-With `--export` (optionally followed by a directory, default `.`) the three report files are written after the scan:
+CLI (English output):
 
 ```
-hdtune_report_<timestamp>/
-├── segments.csv   # per-segment stats: avg/min/max latency, slow & error block counts
-├── errors.csv     # one row per failing block: offset, length, errno, status
-└── summary.txt    # one-page summary of the scan
+python HD_Doc.py --cli --target \\.\PhysicalDrive1 --bs 4M
+python HD_Doc.py --cli --target \\.\PhysicalDrive1 --quick
+python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 ```
 
-All CLI options:
+Scanning a physical disk needs administrator rights; the program asks for
+elevation via UAC automatically (disable with `--no-elevate`). Image files
+need no special rights.
 
-| Option | Default | Meaning |
-|--------|---------|---------|
-| `--target` | – | `\\.\PhysicalDriveN` or an image file path |
-| `--bs` | `auto` | Block size, e.g. `4M` / `512K` / `auto` |
-| `--segment-gb` | `4` | Segment size in GB; `0` = whole disk at once |
-| `--quick` | off | Quick scan (region head sampling) |
-| `--quick-sample-mb` | `16` | Quick-scan sample size per region (MB) |
-| `--limit-mb` / `--offset-mb` | `0` | Scan only the first N MB / start at an offset |
-| `--export [DIR]` | off | Export the report into `DIR/hdtune_report_<timestamp>/` |
-| `--no-elevate` | off | Forbid automatic administrator elevation |
-| `--fio` | – | Path to the `fio` executable |
-| `--ioengine` | auto | fio ioengine (default `windowsaio`) |
-| `--no-direct` | off | Disable `direct=1` |
-| `--yellow-mult` / `--red-mult` | `3` / `8` | Slow / very-slow threshold = median x N |
-| `--yellow-floor-ms` / `--red-floor-ms` | `10` / `100` | Threshold floors in ms |
+`--export [DIR]` writes the report into `DIR/HD_Doc_report_<timestamp>/`.
+Without it, no files are written. `--help` lists all options.
 
-## Project layout
+## Language files
 
-UI and business logic are strictly separated — the CLI never touches any UI code:
+Interface strings live in `lang/en.json` and `lang/zh.json`, loaded at
+runtime. To add a language, drop a `lang/<code>.json` with the same keys
+and register the code in `LANGUAGES` in `HD_Doc_core.py`.
+
+## Build the Windows executable
 
 ```
-hdtune_scan/
-├── hdtune_core.py    # business logic: elevation, segment planning, fio engine,
-│                     # drive enumeration, report export (zero tkinter dependency)
-├── hdtune_cli.py     # CLI mode: imports hdtune_core only, English output
-├── hdtune_gui.py     # tkinter GUI: imports hdtune_core only, i18n (en/zh)
-├── hdtune_scan.py    # thin entry point: argument parsing & dispatch
-├── build_exe.py      # PyInstaller packaging helper (single-file exe)
-└── test_*.py         # test suite (see below)
+python build_exe.py
 ```
 
-## Building the Windows executable
+Produces `dist/HD_Doc.exe` (single file). fio.exe and the `lang/` files are
+bundled when found on the build machine. Requires a Python with tkinter and
+PyInstaller.
+
+## Tests
 
 ```
-python build_exe.py            # single-file -> dist/hdtune_scan.exe
-python build_exe.py --onedir   # directory build (faster startup)
+python test/test_units.py          # core logic + i18n
+python test/test_integration.py    # fio engine, reports, regressions
+python test/test_gui_smoke.py      # GUI behavior incl. language switch
+python test/test_gui_stop.py       # stop / race conditions
+python test/test_gui_quick.py      # quick scan end to end
+python test/test_cli_stop.py       # CLI Ctrl+C handling
+python test/test_cli_gate.py       # elevation gate + CLI scan
+python test/test_gui_gate.py       # elevation gate in GUI
+python test/test_hdd_stop.py       # real hardware mid-scan stop
 ```
 
-Requirements for building: PyInstaller and a Python with tkinter (the python.org installer bundles tkinter).
-When `fio.exe` is found on the build machine it is embedded into the package automatically, so the produced `.exe` is self-contained.
+The fio-based suites need `fio` on the machine (`C:\Program Files\fio\fio.exe`
+is picked up automatically).
 
-## Running the tests
+## Layout
 
 ```
-python test_units.py          # unit tests: i18n, thresholds, segment planning, report export
-python test_integration.py    # report export (English + Chinese) on a synthetic disk image
-python test_gui_smoke.py      # GUI: default English UI, quick scan, heat map, language switch, About
-python test_gui_stop.py       # GUI: stop mid-scan (real hardware path + race conditions), banner behavior
-python test_gui_quick.py      # GUI: quick scan, English tooltips, export
-python test_cli_gate.py       # CLI: elevation gate (5 branches) + quick scan + --export
-python test_gui_gate.py       # GUI: elevation gate (pythonw.exe target)
-python test_cli_stop.py       # CLI: Ctrl+C mid-scan -> exit code 130, no report written
-python test_hdd_stop.py       # real HDD: stop mid full scan, no false error blocks
+HD_Doc_core.py  business logic: elevation, segments, fio engine, reports
+                (no UI dependency; loads lang/*.json)
+HD_Doc_cli.py   command-line front end (English only)
+HD_Doc_gui.py   tkinter GUI (bilingual)
+HD_Doc.py       entry point: dispatches to CLI or GUI
+build_exe.py    PyInstaller packaging
+lang/           interface strings (en.json, zh.json)
+test/           test suites (python test/test_units.py, ...)
 ```
-
-## How it works
-
-1. **Elevation** — if the target is `\\.\PhysicalDriveN` and the process is not elevated, the tool relaunches itself through UAC (`--no-elevate` to opt out).
-2. **Planning** — the disk capacity is queried via `IOCTL_DISK_GET_LENGTH_INFO` (with a binary-search fallback for drives that do not support the ioctl), then the scan is split into segments (default 4 GB each; `0` = single pass). Quick scan samples the first N MB of each region instead.
-3. **Scanning** — each segment is read by `fio` with sequential reads and `direct=1`; the streamed JSON output is parsed block by block. Each block gets a latency, a status (`ok` / `slow` / `bad` / `error`) and, on failure, the Windows errno name.
-4. **Thresholds** — slow = `max(median x 3, 10 ms)`, very slow = `max(median x 8, 100 ms)`; the medians adapt to the disk's own speed, so the same settings work for HDDs, SSDs and SD cards.
-5. **Rendering** — the GUI lays the blocks out as a heat map grid (block size cell = 1 segment when scanning in segments), colors each cell by status, and lists all failing blocks in an error tree. The summary tab reports totals, latency percentiles and the error count.
-6. **Export** — only on demand (CLI `--export` / GUI *Export* button) are `segments.csv`, `errors.csv` and `summary.txt` written.
-
-## Known limitations
-
-- Windows only (fio `windowsaio` engine, `\\.\PhysicalDriveN` paths, UAC elevation)
-- Scan speed depends on the disk itself — a full 1 TB HDD scan takes roughly 1.5–3 hours
-- No SMART data — this is a pure read-error/slow-block scanner, not a health monitor
-- USB bridges may drop the direct path; use `--no-direct` if reads fail immediately
 
 ## License
 

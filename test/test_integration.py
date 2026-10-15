@@ -1,17 +1,19 @@
 """集成测试：停止扫描的错误语义 + 引擎可用性探测。
 需要 fio 与测试镜像（自动创建）。运行：
-    python test_integration.py
+    python test/test_integration.py
 """
 import os
 import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import hdtune_core as H
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import HD_Doc_core as H
 
 FIO = "C:/Program Files/fio/fio.exe"
-BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fio_test")
+# 测试镜像放在仓库外的 ../fio_test（与其余测试套件共用），避免落进版本库
+BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "..", "fio_test")
 BIG = os.path.join(BASE, "it_big.img")     # 512MB，保证扫描持续数秒
 SMALL = os.path.join(BASE, "it_small.img")  # 8MB，保证 3 秒内能扫完
 FAILS = []

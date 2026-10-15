@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""build_exe.py —— 把 hdtune_scan.py 打包成 Windows 单文件可执行程序
+"""build_exe.py —— 把 HD_Doc.py 打包成 Windows 单文件可执行程序（HD Doc）
 
 用法（在装有 PyInstaller 的 Python 环境里运行，GUI 打包需要该 Python 带 tkinter）：
-    python build_exe.py                # 单文件打包 → dist/hdtune_scan.exe
+    python build_exe.py                # 单文件打包 → dist/HD_Doc.exe
     python build_exe.py --onedir       # 目录打包（启动更快，分发的是整个文件夹）
 
 说明：
   - --windowed（GUI 子系统）：双击运行不会出现黑色控制台窗口；在命令行里
-    用 --cli 模式运行时，程序会自动把输出绑回所在终端（见 hdtune_scan.py
+    用 --cli 模式运行时，程序会自动把输出绑回所在终端（见 HD_Doc.py
     的 _ensure_console）
   - 构建机上能找到 fio 时自动把它打进包（--add-binary），最终 exe 自带
     fio、拷到别的电脑也能用；找不到时也能打包，运行时再让用户指定 fio 路径
+  - lang/ 语言文件一并打入（--add-data），界面文案在打包版同样可用
   - 本脚本只负责调用 PyInstaller，打包逻辑（隐藏导入等）都写在命令行参数里
 """
 import argparse
@@ -21,10 +22,11 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-APP = os.path.join(HERE, "hdtune_scan.py")
-NAME = "hdtune_scan"
+APP = os.path.join(HERE, "HD_Doc.py")
+LANG_DIR = os.path.join(HERE, "lang")
+NAME = "HD_Doc"
 
-# 与 hdtune_scan.resolve_fio 一致的候选列表（打包时用于 --add-binary）
+# 与 HD_Doc.resolve_fio 一致的候选列表（打包时用于 --add-binary）
 FIO_CANDS = (
     r"C:\Program Files\fio\fio.exe",
     r"C:\Program Files (x86)\fio\fio.exe",
@@ -45,7 +47,7 @@ def find_fio():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="打包 hdtune_scan 为 Windows 可执行文件")
+    ap = argparse.ArgumentParser(description="打包 HD Doc 为 Windows 可执行文件")
     ap.add_argument("--onedir", action="store_true",
                     help="目录模式打包（默认单文件 onefile）")
     ap.add_argument("--no-fio", action="store_true",
@@ -81,13 +83,19 @@ def main():
     fio = None if args.no_fio else find_fio()
     if fio:
         # 目标名 ".: fio.exe" → 解压后位于 sys._MEIPASS/fio.exe
-        # （hdtune_scan.resolve_fio 在 frozen 时优先查这里）
+        # （HD_Doc.resolve_fio 在 frozen 时优先查这里）
         cmd += ["--add-binary", "%s;." % fio]
         print("[信息] 将内置 fio: %s（%.1f MB）"
               % (fio, os.path.getsize(fio) / 1048576.0))
     else:
         print("[警告] 未找到 fio.exe，打出的包不自带 fio；")
         print("        运行时需在 GUI 里指定 fio 路径，或系统已安装 fio。")
+    if os.path.isdir(LANG_DIR):
+        # lang/en.json、lang/zh.json → 解压后位于 sys._MEIPASS/lang/
+        cmd += ["--add-data", "%s;lang" % LANG_DIR]
+        print("[信息] 将内置语言文件: %s" % LANG_DIR)
+    else:
+        print("[警告] 未找到 %s，打包版将无界面文案" % LANG_DIR)
     cmd.append(APP)
 
     print("[信息] 执行: %s" % " ".join(cmd))

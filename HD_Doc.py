@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hdtune_scan.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
+HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
 
 代码结构（UI 与业务逻辑分离）：
-  hdtune_core.py   业务逻辑：权限/提权、分段规划、磁盘枚举、fio 扫描引擎、
+  HD_Doc_core.py   业务逻辑：权限/提权、分段规划、磁盘枚举、fio 扫描引擎、
                    报告导出（零 tkinter 依赖）
-  hdtune_cli.py    命令行模式：只 import hdtune_core，不碰任何 UI
-  hdtune_gui.py    GUI 模式：tkinter 界面，只 import hdtune_core
-  hdtune_scan.py   本文件：参数解析与分发（--cli 才会导入 cli 模块）
+  HD_Doc_cli.py    命令行模式：只 import HD_Doc_core，不碰任何 UI
+  HD_Doc_gui.py    GUI 模式：tkinter 界面，只 import HD_Doc_core
+  HD_Doc.py   本文件：参数解析与分发（--cli 才会导入 cli 模块）
 
 用法
-  python hdtune_scan.py                                          # GUI 模式
-  python hdtune_scan.py --cli --target test.img --bs 4M          # 命令行模式（无需 tkinter）
-  python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --segment-gb 4
-  python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --quick          # 快速扫描（抽样）
-  python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --limit-mb 64   # 只扫前 64MB（试扫）
-  python hdtune_scan.py --cli --target "\\\\.\\PhysicalDrive1" --no-elevate    # 禁止自动提权
+  python HD_Doc.py                                          # GUI 模式
+  python HD_Doc.py --cli --target test.img --bs 4M          # 命令行模式（无需 tkinter）
+  python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --segment-gb 4
+  python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --quick          # 快速扫描（抽样）
+  python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --limit-mb 64   # 只扫前 64MB（试扫）
+  python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --no-elevate    # 禁止自动提权
 
 打包成 Windows 可执行文件
-  python build_exe.py          # PyInstaller 单文件打包（输出 dist/hdtune_scan.exe）
-  打包版自带 fio.exe（构建机上能找到 fio 时自动打入），双击即用：
-    hdtune_scan.exe                                  # GUI（无控制台窗口）
-    hdtune_scan.exe --cli --target <目标>             # 命令行（输出自动绑回所在终端）
-    hdtune_scan.exe --version                        # 验证打包版可运行
+  python build_exe.py          # PyInstaller 单文件打包（输出 dist/HD_Doc.exe）
+  打包版自带 fio.exe 与 lang/ 语言文件，双击即用：
+    HD_Doc.exe                                  # GUI（无控制台窗口）
+    HD_Doc.exe --cli --target <目标>             # 命令行（输出自动绑回所在终端）
+    HD_Doc.exe --version                        # 验证打包版可运行
 
 注意
   - 扫描物理磁盘需要管理员权限（fio 才能打开 \\\\.\\PhysicalDriveN）；
@@ -38,14 +38,15 @@ import argparse
 import os
 import sys
 
-import hdtune_core as core
-from hdtune_core import VERSION, IS_WIN, auto_elevate_enabled, _ensure_console, \
+import HD_Doc_core as core
+from HD_Doc_core import VERSION, IS_WIN, auto_elevate_enabled, _ensure_console, \
     _fix_stdout_encoding
 
 
 def build_parser():
     ap = argparse.ArgumentParser(
-        description="HD Tune style disk error scanner (fio + tkinter, read-only)")
+        prog="HD Doc",
+        description="HD Doc: read-only disk error scanner (fio + tkinter)")
     ap.add_argument("--cli", action="store_true",
                     help="command-line mode (no tkinter needed)")
     ap.add_argument("--version", action="store_true",
@@ -73,7 +74,7 @@ def build_parser():
     ap.add_argument("--offset-mb", type=float, default=0, help="start offset in MB")
     ap.add_argument("--export", nargs="?", const=".", default=None, metavar="DIR",
                     help="export the report (segments.csv / errors.csv / "
-                         "summary.txt) into DIR/hdtune_report_<timestamp>/; "
+                         "summary.txt) into DIR/HD_Doc_report_<timestamp>/; "
                          "without this flag no files are written")
     ap.add_argument("--yellow-mult", type=float, default=3.0,
                     help="slow threshold = median x N")
@@ -94,22 +95,22 @@ def main(argv=None):
 
     if args.version:
         _ensure_console()   # 打包版在命令行里运行时校正输出编码
-        print("hdtune_scan %s (fio: %s)"
+        print("HD Doc %s (fio: %s)"
               % (VERSION, "bundled" if getattr(sys, "frozen", False) else "source"))
         return 0
     if args.cli:
         # 延迟导入：CLI 路径不加载 tkinter / GUI 代码
-        from hdtune_cli import cli_main
+        from HD_Doc_cli import cli_main
         return cli_main(args)
     try:
         # 只有 GUI 模式才导入 tkinter
-        from hdtune_gui import HDTuneScanApp
+        from HD_Doc_gui import HDDocApp
     except ImportError as e:
         print("Error: cannot start GUI (no tkinter in this Python? %s)" % e)
         print("Use the python.org installer (bundles tkinter), or the CLI mode:")
-        print("  python hdtune_scan.py --cli --target <target> --bs 4M")
+        print("  python HD_Doc.py --cli --target <target> --bs 4M")
         return 2
-    app = HDTuneScanApp()
+    app = HDDocApp()
     app.mainloop()
     return 0
 

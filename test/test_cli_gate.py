@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CLI 门禁测试（模块布局：hdtune_cli + hdtune_core）。
+"""CLI 门禁测试（模块布局：HD_Doc_cli + HD_Doc_core）。
 
 覆盖：提权门禁各分支 + 快速扫描实扫 + --export 按需导出。
 CLI 输出固定英文（cli_main 内置 set_language("en")）。
@@ -8,9 +8,9 @@ import os
 import sys
 import types
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import hdtune_core as HC
-import hdtune_cli as HCLI
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import HD_Doc_core as HC
+import HD_Doc_cli as HCLI
 
 
 def make_args(**kw):
@@ -79,19 +79,19 @@ if os.path.isfile(small):
 
     # ---- 场景 7：--export → 报告写入指定目录，且为英文 ----
     import tempfile
-    exp = tempfile.mkdtemp(prefix="hdtune_cli_gate_")
+    exp = tempfile.mkdtemp(prefix="HD_Doc_cli_gate_")
     rc = HCLI.cli_main(make_args(target=small, bs="1M", quick=True,
                                  quick_sample_mb=2.0, export=exp))
     print("场景7 退出码 =", rc, "(期望 0)")
     assert rc == 0
-    dirs = [d for d in os.listdir(exp) if d.startswith("hdtune_report_")]
+    dirs = [d for d in os.listdir(exp) if d.startswith("HD_Doc_report_")]
     assert dirs, "export dir should contain a report folder"
     outdir = os.path.join(exp, dirs[0])
     files = sorted(os.listdir(outdir))
     assert files == ["errors.csv", "segments.csv", "summary.txt"], files
     head = open(os.path.join(outdir, "summary.txt"),
                 encoding="utf-8").read()
-    assert "HD Tune Style Disk Error Scan Report" in head, head[:80]
+    assert "HD Doc Disk Error Scan Report" in head, head[:80]
     seg_head = open(os.path.join(outdir, "segments.csv"),
                     encoding="utf-8-sig").readline()
     assert seg_head.startswith("Segment,"), seg_head

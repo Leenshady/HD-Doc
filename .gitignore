@@ -14,10 +14,12 @@ dist/
 *.manifest
 
 # ---- Scan results & test artifacts (generated at runtime, never committed) ----
+HD_Doc_report_*/
 hdtune_report_*/
 exe_test_*.bin
 *.img
 *.raw
+fio_test/          # 测试镜像统一放仓库外（../fio_test），防误建入库
 
 # ---- Editor / OS ----
 .vscode/

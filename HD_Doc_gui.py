@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hdtune_gui.py —— GUI 模式（tkinter；只依赖 hdtune_core）
+HD_Doc_gui.py —— GUI 模式（tkinter；只依赖 HD_Doc_core）
 
-本模块只在 GUI 模式下被入口 hdtune_scan.py 导入；
+本模块只在 GUI 模式下被入口 HD_Doc.py 导入；
 没有 tkinter 的环境（如 --cli 命令行模式）永远不会加载本模块。
 
 界面语言：默认英文，菜单 Language/语言 可切换中文，选择持久化在
-用户配置目录（见 hdtune_core 的 i18n 小节）。所有静态文案经 tr()
-取当前语言；切换语言时 _apply_language 重建界面并恢复日志、汇总、
-热力图与扫描状态。扫描结果/错误提示以界面内横幅与日志展示，
-尽量不弹窗。
+用户配置目录（见 HD_Doc_core 的 i18n 小节；文案表在 lang/*.json，
+独立于代码）。切换语言即保存偏好并重启程序，以新语言重载整个
+界面。扫描结果/错误提示以界面内横幅与日志展示，尽量不弹窗。
 """
 
 import os
@@ -26,18 +25,30 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
-import hdtune_core as core                      # 业务逻辑全部经 core
-from hdtune_core import *                       # 常用名直接可用（调用点不变）
-from hdtune_core import _pythonw_path           # 下划线名需显式导入
+import HD_Doc_core as core                      # 业务逻辑全部经 core
+from HD_Doc_core import *                       # 常用名直接可用（调用点不变）
+from HD_Doc_core import _pythonw_path           # 下划线名需显式导入
 
 # 横幅级别 → 前景色
 BANNER_COLORS = {"info": "#185FA5", "ok": "#3B6D11",
                  "warn": "#B36A00", "error": "#A32D2D"}
 
 
-class HDTuneScanApp(tk.Tk):
+def restart_app():
+    """以当前解释器重启本程序（切换语言后重载界面用）。
+
+    源码运行：python HD_Doc.py → python HD_Doc.py
+    打包运行：HD_Doc.exe           → HD_Doc.exe
+    """
+    if getattr(sys, "frozen", False):
+        os.execv(sys.executable, [sys.executable] + sys.argv[1:])
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+class HDDocApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.withdraw()               # 构建期不显示，避免默认位置闪一下
         self.title(tr("gui.title", ver=VERSION))
         self.geometry("1140x820")
         self.minsize(980, 700)
@@ -67,96 +78,61 @@ class HDTuneScanApp(tk.Tk):
         self._last_thresh_calc = 0.0
         self._last_flush = 0.0
 
-        # i18n：可翻译控件登记表 + 日志条目（切换语言时整体重渲染）
-        self._i18n_text = []     # (widget, key, kwargs)
-        self._i18n_values = []   # (widget, key) 下拉列表
-        self._i18n_tabs = []     # (notebook, child, key) 页签
-        self._i18n_headings = [] # (treeview, column, key) 表头
-        self._log_entries = []   # (stream, key, kwargs)
-        self._last_banner = None # (key, level, kwargs)
+        # 界面语言（切换后重启重载，见 _set_language / restart_app）
         self.var_lang = tk.StringVar(value=get_language())
 
         self._build_ui()
         self._refresh_drives()
+        self._center_on_screen()
         self._poll_after = self.after(100, self._poll_queue)
         self._admin_after = self.after(200, self._startup_admin_check)
 
-    # ---------------------------------------------------------- i18n 辅助
+    # ---------------------------------------------------------- 文案辅助
+    # 语言在启动时确定（切换语言会重启程序），界面文案只需取一次
+    def _center_on_screen(self):
+        """启动时把窗口居中放到屏幕中间，并一次性显示（无位置闪烁）。
+
+        要点：未映射时发出的几何请求会被窗口管理器丢弃（实测位置/尺寸
+        都被改写），所以先 update() 让布局就绪，再用一个请求同时指定
+        尺寸与位置；构建期窗口是 withdraw 状态，deiconify 时按请求位置
+        直接出现，不会先在默认位置闪一下。
+        """
+        self.update_idletasks()
+        self.update()
+        w, h = 1140, 820              # 设计尺寸（与 __init__ 首行一致）
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+        self.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self.deiconify()
+
     def _reg(self, widget, key, **kw):
-        """登记一个静态文本控件（按钮/标签），切换语言时自动更新"""
+        """设置静态文本控件（按钮/标签）的文案"""
         widget.config(text=tr(key, **kw))
-        self._i18n_text.append((widget, key, kw))
         return widget
 
     def _reg_values(self, widget, key):
-        """登记一个下拉列表控件"""
+        """设置下拉列表控件的选项文案"""
         widget.config(values=tr_list(key))
-        self._i18n_values.append((widget, key))
         return widget
 
     def _reg_tab(self, nb, child, key):
         nb.add(child, text=tr(key))
-        self._i18n_tabs.append((nb, child, key))
 
     def _reg_heading(self, tree, column, key):
         tree.heading(column, text=tr(key))
-        self._i18n_headings.append((tree, column, key))
-
-    def _apply_language(self):
-        """切换语言：重建界面 chrome，保留日志/汇总/热力图/扫描状态"""
-        cells_backup = [dict(c) for c in self.cells]
-        n_seg = self.n_segments
-        meta = list(self.seg_meta)
-        scanning = bool(self.worker and self.worker.is_alive())
-        for w in self.winfo_children():
-            w.destroy()
-        self._build_ui()
-        # 恢复日志
-        self._render_log()
-        # 恢复汇总与错误树
-        if self.summary:
-            self._render_error_tree()
-            self._render_summary()
-            self.btn_export.config(state="normal")
-            self.nb.select(self.txt_summary)
-        # 恢复热力图
-        if n_seg:
-            self._reset_map(n_seg, meta)
-            for i, c in enumerate(cells_backup):
-                if i < len(self.cells):
-                    self.cells[i].update(c)
-                    self.dirty.add(i)
-            self._flush_cells(force=True)
-        # 恢复按钮/状态
-        if scanning:
-            self.btn_start.config(state="disabled")
-            self.btn_stop.config(state="normal")
-            self.lbl_state.config(text=tr("gui.state_scanning"),
-                                  foreground="#185FA5")
-        else:
-            self.btn_stop.config(state="disabled")
-            if self.summary:
-                self.lbl_state.config(
-                    text=tr("gui.state_done_aborted") if self.summary["aborted"]
-                    else tr("gui.state_done"), foreground="#3B6D11")
-            elif self.scan_start_ts:
-                self.lbl_state.config(text=tr("gui.state_stopped"),
-                                      foreground="#666")
-        # 恢复横幅
-        if self._last_banner:
-            key, level, kw = self._last_banner
-            self._banner(key, level, **kw)
-        self._update_admin_ui()
-        # 提权启动检查若尚未触发，重新排程
-        if not getattr(self, "_admin_checked", False):
-            self._admin_after = self.after(200, self._startup_admin_check)
 
     def _set_language(self, lang):
+        """切换语言：持久化偏好后重启程序，以新语言重载界面。
+        扫描中禁止切换（重启会遗留 fio 子进程），只给界面内提示。"""
         if lang == get_language():
             return
-        set_language(lang)
-        self.var_lang.set(lang)
-        self._apply_language()
+        if self.worker and self.worker.is_alive():
+            self._banner("gui.msg.lang_busy", "warn")
+            return
+        set_language(lang)      # 写入配置；重启后由 get_language 读回
+        restart_app()           # 一般不返回（execv 替换当前进程）
 
     # ---------------------------------------------------------- UI 构建
     def _build_ui(self):
@@ -169,7 +145,8 @@ class HDTuneScanApp(tk.Tk):
 
         self._reg(ttk.Label(bar), "gui.target").grid(row=0, column=0, sticky="w")
         self.var_target = tk.StringVar()
-        self.combo_target = ttk.Combobox(bar, textvariable=self.var_target, width=52)
+        self.combo_target = ttk.Combobox(bar, textvariable=self.var_target, width=52,
+                                       state="readonly")
         self.combo_target.grid(row=0, column=1, sticky="we", padx=(0, 4))
         self._reg(ttk.Button(bar, command=self._refresh_drives),
                   "gui.refresh").grid(row=0, column=2)
@@ -317,6 +294,15 @@ class HDTuneScanApp(tk.Tk):
                                         wrap="word")
         self._reg_tab(self.nb, self.txt_summary, "gui.tab_summary")
 
+    def _lang_menu_state(self, enabled):
+        """扫描期间禁用语言菜单（切换语言=重启，不能中断扫描）"""
+        try:
+            self._menubar.entryconfig(
+                self._lang_cascade_idx,
+                state="normal" if enabled else "disabled")
+        except Exception:
+            pass
+
     def _build_menubar(self):
         menubar = tk.Menu(self)
         lang_menu = tk.Menu(menubar, tearoff=0)
@@ -332,6 +318,7 @@ class HDTuneScanApp(tk.Tk):
         self._menubar = menubar
         self._lang_menu = lang_menu
         self._help_menu = help_menu
+        self._lang_cascade_idx = 0    # Language 是第一个级联菜单
 
     # ---------------------------------------------------------- 关于窗口
     def _show_about(self):
@@ -339,14 +326,11 @@ class HDTuneScanApp(tk.Tk):
         win.title(tr("gui.about.title"))
         win.transient(self)
         win.resizable(False, False)
-        frm = ttk.Frame(win, padding=12)
+        frm = ttk.Frame(win, padding=20)
         frm.pack(fill="both", expand=True)
-        txt = tk.Text(frm, width=56, height=20, wrap="word",
-                      font=("Segoe UI", 9), relief="flat", bg="#F5F5F0")
-        txt.insert("1.0", tr("gui.about.body"))
-        txt.config(state="disabled")
-        txt.pack(fill="both", expand=True)
-        ttk.Button(frm, text="OK", command=win.destroy).pack(pady=(10, 0))
+        tk.Label(frm, text=tr("gui.about.body"), wraplength=400,
+                 justify="center").pack()
+        ttk.Button(frm, text="OK", command=win.destroy).pack(pady=(14, 0))
         # 模态 + 居中于父窗口
         win.grab_set()
         self.update_idletasks()
@@ -387,25 +371,17 @@ class HDTuneScanApp(tk.Tk):
     # ---------------------------------------------------------- 横幅/日志
     def _banner(self, key, level="info", **kw):
         """界面内结果横幅（替代弹窗）"""
-        self._last_banner = (key, level, kw)
         self.lbl_banner.config(text=tr(key, **kw),
                                foreground=BANNER_COLORS.get(level, "#185FA5"))
 
     def _log(self, stream, key, **kw):
-        """记录一条日志（按 key + 参数存条目，切换语言可整体重渲染）"""
-        self._log_entries.append((stream, key, kw))
-        if len(self._log_entries) > 400:
-            del self._log_entries[:100]
-        self.txt_log.insert("end", "[%s] %s\n" % (stream, tr(key, **kw)))
+        """写入一条日志（插入时定型；切换语言会重启重载）"""
+        self._log_line(stream, tr(key, **kw))
+
+    def _log_line(self, stream, line):
+        self.txt_log.insert("end", "[%s] %s\n" % (stream, line))
         if int(self.txt_log.index("end-1c").split(".")[0]) > 600:
             self.txt_log.delete("1.0", "200.0")
-
-    def _render_log(self):
-        self.txt_log.delete("1.0", "end")
-        for stream, key, kw in self._log_entries:
-            line = kw.get("_raw", "") if key is None else tr(key, **kw)
-            self.txt_log.insert("end", "[%s] %s\n" % (stream, line))
-        self.txt_log.see("end")
 
     # ---------------------------------------------------------- 管理员权限
     def _update_admin_ui(self):
@@ -562,7 +538,6 @@ class HDTuneScanApp(tk.Tk):
         self.txt_summary.delete("1.0", "end")
         self.summary = None
         self.btn_export.config(state="disabled")
-        self._last_banner = None
         self.lbl_banner.config(text="")
         self.scan_start_ts = time.time()
         self.scan_bs = bs
@@ -591,6 +566,7 @@ class HDTuneScanApp(tk.Tk):
         self.worker.start()
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
+        self._lang_menu_state(False)
         self.lbl_state.config(text=tr("gui.state_scanning"),
                               foreground="#185FA5")
         self._log("info", "gui.log.start_scan",
@@ -774,6 +750,7 @@ class HDTuneScanApp(tk.Tk):
         elif et == "worker_done":
             self.btn_start.config(state="normal")
             self.btn_stop.config(state="disabled")
+            self._lang_menu_state(True)
             self.worker = None
             if self.scan_start_ts and not self.summary:
                 self.lbl_state.config(text=tr("gui.state_stopped"),
@@ -781,12 +758,7 @@ class HDTuneScanApp(tk.Tk):
 
     def _log_raw(self, stream, line):
         """fio 原始输出（英文技术文本，不过 i18n）"""
-        self._log_entries.append((stream, None, {"_raw": line}))
-        if len(self._log_entries) > 400:
-            del self._log_entries[:100]
-        self.txt_log.insert("end", "[%s] %s\n" % (stream, line))
-        if int(self.txt_log.index("end-1c").split(".")[0]) > 600:
-            self.txt_log.delete("1.0", "200.0")
+        self._log_line(stream, line)
 
     def _on_tick(self, ev):
         seg = ev.get("segment") or 0
@@ -955,7 +927,7 @@ class HDTuneScanApp(tk.Tk):
         d = filedialog.askdirectory(title=tr("gui.export"))
         if not d:
             return
-        outdir = os.path.join(d, "hdtune_report_%s"
+        outdir = os.path.join(d, "HD_Doc_report_%s"
                               % datetime.now().strftime("%Y%m%d_%H%M%S"))
         files = write_reports(outdir, self.summary)
         self._log("info", "gui.log.exported", d=outdir)

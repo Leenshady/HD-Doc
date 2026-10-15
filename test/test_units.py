@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""hdtune_scan 单元测试：分段对齐 / 路径规范化 / 修整逻辑（避开 shell 转义）"""
+"""HD Doc 单元测试：分段对齐 / 路径规范化 / 修整逻辑（避开 shell 转义）"""
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import hdtune_core as H
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import HD_Doc_core as H
 
 BS = 4 * 1024 * 1024
 SIZE = 79691776  # 76 MiB 测试文件
@@ -266,8 +266,15 @@ check("_cli_bind_parent_console 无握手环境变量时为 no-op",
 os.environ.pop("HDTUNE_ATTACH_PARENT_CONSOLE", None)
 
 # ---------- i18n：默认英文、可切中文、占位符、键集合一致 ----------
+import json as _json
+
 os.environ.pop("HDTUNE_LANG", None)   # 排除测试环境的临时覆盖
 H.set_language("en")                  # 显式置英，排除本机配置干扰
+_langdir = H._lang_dir()
+with open(os.path.join(_langdir, "en.json"), encoding="utf-8") as _f:
+    _en_file = _json.load(_f)
+with open(os.path.join(_langdir, "zh.json"), encoding="utf-8") as _f:
+    _zh_file = _json.load(_f)
 check("默认语言为英文", H.get_language(), "en")
 check("tr 取英文", H.tr("rep.target", t="X"), "Target: X")
 check("status_text 英文", H.status_text("ok"), "OK")
@@ -280,8 +287,11 @@ check("tr 占位符含 % 不乱码", "%.2f" in H.tr("rep.mode_quick", n=1, cov="
                                             pct=0.2) or "%" in H.tr("rep.mode_quick",
                                                                    n=1, cov="1 GB", pct=0.2), True)
 check("缺失键回退键名", H.tr("no.such.key"), "no.such.key")
-check("两种语言键集合一致",
-      set(H._I18N["en"]) == set(H._I18N["zh"]), True)
+check("两种语言键集合一致（lang/*.json）",
+      set(_en_file) == set(_zh_file), True)
+check("运行时表与 en.json 一致", set(H._I18N["en"]) == set(_en_file), True)
+check("运行时表与 zh.json 一致", set(H._I18N["zh"]) == set(_zh_file), True)
+check("语言目录为 lang/", os.path.basename(H._lang_dir()), "lang")
 check("LANGUAGES 仅 en/zh", H.LANGUAGES, ("en", "zh"))
 check("set_language 拒绝非法码", H.set_language("fr"), False)
 check("set_language 接受 zh", H.set_language("zh"), True)

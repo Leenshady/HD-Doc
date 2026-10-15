@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""GUI 门禁测试（模块布局：hdtune_gui + hdtune_core）。
+"""GUI 门禁测试（模块布局：HD_Doc_gui + HD_Doc_core）。
 
 界面固定英文（HDTUNE_LANG=en）；覆盖提权目标选择与提权分支。
 """
@@ -9,13 +9,13 @@ import time
 
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 os.environ["HDTUNE_LANG"] = "en"
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import hdtune_gui as H
-from hdtune_core import _pythonw_path, _elevation_target
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import HD_Doc_gui as H
+from HD_Doc_core import _pythonw_path, _elevation_target
 
 root = H.tk.Tk()
 root.withdraw()
-app = H.HDTuneScanApp()
+app = H.HDDocApp()
 app.withdraw()
 app.update()
 print("启动权限标签: %r（本会话 is_admin=%s）"
