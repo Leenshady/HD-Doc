@@ -141,8 +141,9 @@ def main():
     check("不对齐尾巴: 文件上实际读 7 块（>expected 不算错）",
           s["n_blocks"], 7)
 
-    # 场景 2：段超出文件末尾。文件上 fio 会越过 EOF 继续读（4 块、error=0）；
-    # 物理盘上则只读到设备尾。两种行为都不应产生错误块/未扫描记录。
+    # 场景 2：段超出文件末尾。扫描器按容量钳制（fio 会把镜像文件扩展到
+    # offset+size，只读工具绝不写目标），实际只读 [6M, 8M] 两块；
+    # 不产生错误块/未扫描记录，目标文件大小不变。
     sc = H.FioScanner(FIO)
     s = sc.run(SMALL, 1024 * 1024, [(6 * 1024 * 1024, 4 * 1024 * 1024)],
                ioengine="windowsaio", direct=True,
@@ -153,6 +154,8 @@ def main():
     check("EOF 截断: 不记未扫描字节（越界部分本就不可读）",
           s["unscanned_bytes"], 0)
     check("EOF 截断: aborted=False（没人点停止）", s["aborted"], False)
+    check("EOF 截断: 目标文件未被扩展（只读承诺）",
+          os.path.getsize(SMALL), small_size)
 
     # 场景 3：部分块 512 对齐时 fio 会读它（actual=7 > expected=6），也不算错
     sc = H.FioScanner(FIO)
@@ -161,6 +164,29 @@ def main():
                total_size=small_size, on_event=lambda e: None)
     check("对齐部分块: 无错误块", len(s["error_blocks"]), 0)
     check("对齐部分块: 读了 7 块", s["n_blocks"], 7)
+
+    print("\n== fio 冒号拆分回归（绝对路径不得在当前目录留下 C 垃圾文件）==")
+    # 背景：fio 的 --filename 把冒号当多文件分隔符，"C:\\...\\it_small.img"
+    # 会被拆成 "C"（当前目录凭空创建的垃圾文件，分走一半 I/O）和真实路径。
+    # 修复：_fio_target_arg 去掉盘符冒号改根相对路径 + fio 子进程 cwd=盘符根。
+    # 断言：绝对路径扫描后 cwd 无新增文件，且块数 = 单文件完整读取的期望值。
+    cwd_before = set(os.listdir("."))
+    sc = H.FioScanner(FIO)
+    s = sc.run(SMALL, 1024 * 1024, [(0, 4 * 1024 * 1024)],
+               ioengine="windowsaio", direct=True,
+               total_size=small_size, on_event=lambda e: None)
+    cwd_new = set(os.listdir(".")) - cwd_before
+    check("绝对路径扫描: cwd 无新增文件（无 C 垃圾）", cwd_new, set())
+    check("绝对路径扫描: 块数=4（4MB/1M 全来自真实文件）", s["n_blocks"], 4)
+    check("绝对路径扫描: 无错误块", len(s["error_blocks"]), 0)
+    check("_fio_target_arg: 带盘符路径去冒号", H._fio_target_arg("C:\\a\\b.img"),
+          ("a\\b.img", "C:\\"))
+    check("_fio_target_arg: 正斜杠盘符路径", H._fio_target_arg("D:/x/y.img"),
+          ("x/y.img", "D:\\"))
+    check("_fio_target_arg: 物理盘路径不动", H._fio_target_arg("\\\\.\\PhysicalDrive0"),
+          ("\\\\.\\PhysicalDrive0", None))
+    check("_fio_target_arg: 相对路径不动", H._fio_target_arg("it_small.img"),
+          ("it_small.img", None))
 
     print("\n== 报告导出（aborted 语义 + 双语）==")
     outdir = os.path.join(BASE, "it_report")

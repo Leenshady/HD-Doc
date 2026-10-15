@@ -1699,6 +1699,25 @@ def extract_json_docs(text):
     return docs, rest
 
 
+def _fio_target_arg(target):
+    """把扫描目标转换成 fio 安全的 --filename 参数，返回 (参数值, 子进程cwd)。
+
+    背景（实测 fio 3.43 Windows 版）：fio 的 --filename 会把冒号当作
+    多文件分隔符。直接传 "C:\\dir\\file.img" 会被拆成 "C" 和
+    "\\dir\\file.img" 两个文件——前者是在当前工作目录凭空创建的垃圾
+    文件（还会分走一半 I/O，导致每个分段只有一半数据来自真实目标），
+    后者才是真实文件。物理盘路径（\\\\.\\PhysicalDriveN）不含冒号，
+    不受影响；相对路径同样不受影响。
+
+    修法：带盘符的绝对路径去掉 "C:" 冒号改为根相对路径，同时把 fio
+    子进程的 cwd 设为盘符根（"C:\\"），fio 解析该相对路径时仍然落到
+    同一个文件，且不再触发冒号拆分。
+    """
+    if len(target) >= 2 and target[1] == ":" and target[0].isalpha():
+        return target[2:].lstrip("\\/"), target[:2] + "\\"
+    return target, None
+
+
 class FioScanner:
     """fio 扫描编排：分段执行、流式解析、聚合统计"""
 
@@ -1719,9 +1738,11 @@ class FioScanner:
 
     # ---------------------------------------------------------- 命令构建
     def _build_cmd(self, target, bs, ioengine, direct, lat_base, offset, size):
+        # 冒号会让 fio 把路径拆成多个文件（见 _fio_target_arg），必须转换
+        fname, fio_cwd = _fio_target_arg(target)
         cmd = [self.fio_path,
                "--name=hdtune_scan",
-               "--filename=" + target,
+               "--filename=" + fname,
                "--rw=read",
                "--bs=%d" % bs,
                "--iodepth=1",
@@ -1738,7 +1759,7 @@ class FioScanner:
             cmd.append("--offset=%d" % offset)
         if size:
             cmd.append("--size=%d" % size)
-        return cmd
+        return cmd, fio_cwd
 
     @staticmethod
     def _find_lat_log(base):
@@ -1891,13 +1912,30 @@ class FioScanner:
         stopped_unscanned = 0   # 其中因主动停止而未扫描的字节数
         t_start = time.time()
 
+        # ---- 段范围钳制到目标容量 ----
+        # 段范围超出容量时（用户 --offset-mb/--limit-mb 指定越界，或容量
+        # 信息过期），fio 会把镜像文件扩展到 offset+size——只读工具绝不
+        # 允许写目标文件，故按容量截断；物理设备读越界同样无意义。
+        # 整段都在容量外则剔除（其字节不计"未扫描"：本就不可读）。
+        # 注意：正常规划（GUI/CLI 按 query_target_size 分段）不会越界，
+        # 这里只兜底；提前过滤可保持 seg_table 与段索引一一对应。
+        if total_size:
+            _clamped = []
+            for _off, _size in segments:
+                if _size is None or _off + _size > total_size:
+                    _size = max(0, total_size - _off)
+                if _size > 0:
+                    _clamped.append((_off, _size))
+            segments = _clamped
+
         try:
             for seg_i, (off, size) in enumerate(segments):
                 if self._stop_evt.is_set():
                     aborted = True
                     break
                 lat_base = os.path.join(tmpdir, "seg%d" % seg_i)
-                cmd = self._build_cmd(target, bs, ioengine, direct, lat_base, off, size)
+                cmd, fio_cwd = self._build_cmd(target, bs, ioengine, direct,
+                                               lat_base, off, size)
                 emit({"type": "log", "stream": "cmd", "line": " ".join(cmd)})
                 emit({"type": "segment", "index": seg_i, "total": len(segments),
                       "offset": off, "size": size})
@@ -1905,6 +1943,7 @@ class FioScanner:
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     bufsize=1, text=True, encoding="utf-8", errors="replace",
+                    cwd=fio_cwd,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 self._proc = proc
                 out_state = {"docs": []}
