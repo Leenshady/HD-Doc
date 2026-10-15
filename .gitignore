@@ -1,0 +1,30 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- Build / packaging ----
+build/
+dist/
+*.spec
+*.manifest
+
+# ---- Scan results & test artifacts (generated at runtime, never committed) ----
+hdtune_report_*/
+exe_test_*.bin
+*.img
+*.raw
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ---- WorkBuddy workspace data ----
+.workbuddy/

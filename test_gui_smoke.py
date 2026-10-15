@@ -1,0 +1,211 @@
+# -*- coding: utf-8 -*-
+"""GUI 冒烟测试：用系统 Python（带 tkinter）实例化应用并驱动各事件处理器。
+覆盖：英文默认界面、语言切换（中/英）、关于窗口、事件流、完成/错误/快速
+汇总、横幅替代弹窗。"""
+import os
+import sys
+import types
+
+# 阻止启动时的自动提权弹窗阻塞无人值守测试（见 _startup_admin_check）
+os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
+# 固定英文，保证断言确定（语言切换行为单独验证）
+os.environ["HDTUNE_LANG"] = "en"
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hdtune_gui as H
+from hdtune_core import plan_grid, tr
+
+# 本模块能导入就说明 tkinter 可用（hdtune_gui 顶层 import tkinter）
+root = H.tk.Tk()
+root.withdraw()
+app = H.HDTuneScanApp()
+app.withdraw()
+app.geometry("1140x820")
+app.update()
+print("App instantiated OK | canvas %dx%d"
+      % (app.canvas_map.winfo_width(), app.canvas_map.winfo_height()))
+
+# ---- 默认英文界面 ----
+assert "Scanner" in app.title(), app.title()
+admin_txt = app.lbl_admin.cget("text")
+assert "Permission" in admin_txt, admin_txt
+print("Permission status: %s (is_admin=%s)" % (admin_txt, H.is_admin()))
+assert app.btn_start.cget("text") == "Start scan"
+assert app.combo_bs["values"][0] == "Auto", app.combo_bs["values"]
+assert "Whole disk at once" in app.combo_seg["values"][0]
+
+# ---- 快速扫描控件（复选框默认关、抽样下拉禁用） ----
+assert hasattr(app, "var_quick") and app.var_quick.get() is False
+assert str(app.combo_quick_sample.cget("state")) == "disabled"
+app.var_quick.set(True)
+app._on_quick_toggle()
+assert str(app.combo_quick_sample.cget("state")) == "readonly"
+app.var_quick.set(False)
+app._on_quick_toggle()
+assert str(app.combo_quick_sample.cget("state")) == "disabled"
+print("Quick-scan controls OK (sample dropdown enabled only when checked)")
+
+# ---- 热力图（withdrawn 窗口布局尺寸为 1x1，monkeypatch 出真实画布尺寸） ----
+app.canvas_map.winfo_width = lambda: 1100
+app.canvas_map.winfo_height = lambda: 700
+N_SEG = 19
+BS = 4 << 20
+SEG_SIZE = 4 << 20
+seg_meta = [(i * SEG_SIZE, SEG_SIZE, None) for i in range(N_SEG)]
+app._reset_map(N_SEG, seg_meta)
+# 段起点块号表（每段 1024 块）——error_block → 格子 的映射依据
+app.seg_block_base = [i * 1024 for i in range(N_SEG)]
+print("Heatmap %d cells (%d cols x %d rows, pitch=%.1fpx, adaptive tiling) OK"
+      % (len(app.cells), app.grid_cols, app.grid_rows, app.cell_pitch))
+assert len(app.cells) == N_SEG
+# 自适应平铺：格子远大于旧的固定 6px；cols*rows 覆盖全部段；网格不超出画布
+assert app.cell_pitch > 20, app.cell_pitch
+assert app.grid_cols * app.grid_rows >= N_SEG
+assert app.grid_ox + app.grid_cols * app.cell_pitch <= 1100 + 1e-6
+assert app.grid_oy + app.grid_rows * app.cell_pitch <= 700 + 1e-6
+# plan_grid 纯函数：段数少→格子封顶；段数多(1862)→格子更小；极端段数全可见
+p_few = plan_grid(1100, 700, 4)[0]
+p_many = plan_grid(1100, 700, 1862)[0]
+assert p_few <= H.CELL_SIZE_MAX and p_many < p_few, (p_few, p_many)
+assert plan_grid(1100, 700, 5000)[1] * plan_grid(1100, 700, 5000)[2] >= 5000
+
+# ---- 事件流（经 _handle_event 分发，与真实队列消费路径一致） ----
+app._handle_event({"type": "segment", "index": 0, "total": N_SEG,
+                   "offset": 0, "size": SEG_SIZE})
+app._handle_event({"type": "tick", "segment": 0, "io_bytes": 40000000,
+                   "bw_bytes": 1500000000, "errors": 0, "pct": None})
+for i in range(N_SEG):
+    app._handle_event({"type": "seg_stat", "index": i,
+                       "median_us": 2200.0 + i * 10, "max_us": 2400.0 + i * 10,
+                       "n_blocks": 1024})
+app._handle_event({"type": "error_block", "index": 5})   # 块 5 → 段 0
+app._handle_event({"type": "log", "stream": "info", "line": "test log"})
+app._handle_event({"type": "log", "stream": "warn", "line": "test warn"})
+app._handle_event({"type": "log", "stream": "stderr", "line": "fio: test"})
+app._update_status(50.0, 1500000000, 26, 0)
+app.update()
+print("Event flow OK | hover: %r" % app.lbl_hover.cget("text"))
+print("Cell 0: median=%.1f n=%d errors=%d"
+      % (app.cells[0]["median"], app.cells[0]["n"], app.cells[0]["errors"]))
+assert app.cells[0]["errors"] == 1
+assert app.cells[18]["median"] == 2200.0 + 18 * 10
+
+# ---- 悬停（横向行优先：最后一个格子 → 第 r 行第 c 列，坐标按自适应 pitch 反算） ----
+last = len(app.cells) - 1
+r, c = divmod(last, app.grid_cols)
+ev = types.SimpleNamespace(
+    x=int(app.grid_ox + c * app.cell_pitch + app.cell_pitch / 2),
+    y=int(app.grid_oy + r * app.cell_pitch + app.cell_pitch / 2))
+app._on_canvas_motion(ev)
+hover = app.lbl_hover.cget("text")
+print("Hover info: %r" % hover)
+assert hover, "hover info should not be empty"
+assert ("Segment #%d/%d" % (last + 1, N_SEG)) in hover and "offset" in hover, \
+    "hover should contain segment number and offset"
+assert "median latency" in hover and "block 18432 on" in hover, \
+    "hover should contain median latency and start block"
+
+# ---- 完成事件（合成汇总） ----
+summary = {
+    "target": "C:/x/test.img", "bs": BS, "ioengine": "windowsaio", "direct": True,
+    "total_size": N_SEG * SEG_SIZE, "quick": False, "segments": [{
+        "index": 0, "offset": 0, "size": N_SEG * SEG_SIZE, "blocks": N_SEG * 1024,
+        "errno": 0,
+        "errno_name": "", "actual_ios": N_SEG * 1024,
+        "expected_ios": N_SEG * 1024,
+        "median_us": 2200.0, "max_us": 2400.0, "runtime_ms": 55,
+        "bw_bytes": 1400000000}],
+    "n_blocks": N_SEG * 1024, "ok": N_SEG * 1024, "slow": 0, "bad": 0,
+    "error_blocks": {},
+    "unlocated_errors": 0, "median_us": 2250.0, "mean_us": 2255.0, "max_us": 2400.0,
+    "p99_us": 2400.0, "slow_thr_us": 30000.0, "bad_thr_us": 100000.0,
+    "elapsed_s": 3.0, "aborted": False, "errno_segments": 0, "last_errno": 0,
+    "last_errno_name": "", "unscanned_bytes": 0, "json_errors": 0,
+    "first_error_offset": None, "tmpdir": "", "fio": "fio",
+}
+# 桩掉所有弹窗：完成路径不应弹任何窗（结果只进横幅/汇总页）
+popped = []
+H.messagebox.showwarning = lambda *a, **k: popped.append(("warning", a))
+H.messagebox.showinfo = lambda *a, **k: popped.append(("info", a))
+H.messagebox.showerror = lambda *a, **k: popped.append(("error", a))
+app._on_finished(summary)
+app.update()
+print("Finish event OK | summary %d chars" % len(app.txt_summary.get("1.0", "end")))
+print("Export button state: %s" % app.btn_export.cget("state"))
+assert not popped, "clean scan must not pop any dialog: %r" % (popped,)
+assert "Scan complete" in app.lbl_banner.cget("text"), app.lbl_banner.cget("text")
+assert "Block size" in app.txt_summary.get("1.0", "end")
+
+# ---- 错误场景汇总（错误展示路径 + 错误块映射到段格子 + error 级横幅） ----
+summary2 = dict(summary)
+summary2["error_blocks"] = {5: "fio read failure EIO (offset 20971520)"}
+summary2["errno_segments"] = 1
+summary2["last_errno"] = 5
+summary2["last_errno_name"] = H.errno_name(5)
+summary2["unscanned_bytes"] = 8388608
+app._on_finished(summary2)
+app.update()
+print("Error scenario OK | error tree rows: %d | cell0 errors=%d"
+      % (len(app.tree_err.get_children()), app.cells[0]["errors"]))
+assert len(app.tree_err.get_children()) == 1
+assert "error blocks" in app.lbl_banner.cget("text")
+assert not popped, "error result must use the in-app banner, not dialogs: %r" % (popped,)
+
+# ---- 快速扫描汇总（覆盖率行） ----
+summary3 = dict(summary)
+summary3["quick"] = True
+summary3["segments"] = [{
+    "index": i, "offset": i * (8 << 30), "size": 16 << 20, "blocks": 4,
+    "errno": 0, "errno_name": "", "actual_ios": 4, "expected_ios": 4,
+    "median_us": 2200.0, "max_us": 2400.0, "runtime_ms": 55,
+    "bw_bytes": 1400000000} for i in range(4)]
+summary3["error_blocks"] = {}
+app._on_finished(summary3)
+app.update()
+txt = app.txt_summary.get("1.0", "end")
+assert "quick scan" in txt and "% of capacity" in txt, \
+    "quick-scan summary should contain the coverage line"
+print("Quick-scan summary OK (with coverage line)")
+
+# ---- 语言切换：英 → 中 → 英，界面/日志/汇总整体重渲染 ----
+log_lines_before = len(app._log_entries)
+app._set_language("zh")
+app.update()
+assert app.btn_start.cget("text") == "▶ 开始扫描", app.btn_start.cget("text")
+assert app.combo_bs["values"][0] == "自动", app.combo_bs["values"]
+tabs = [app.nb.tab(t, "text") for t in app.nb.tabs()]
+assert "fio 日志" in tabs, tabs
+assert "热力图" in app.canvas_map.master.cget("text"), \
+    app.canvas_map.master.cget("text")
+assert "扫描模式" in app.txt_summary.get("1.0", "end")
+assert len(app._log_entries) == log_lines_before, "切换语言不应丢失日志条目"
+assert app.txt_log.get("1.0", "end").count("\n") >= log_lines_before
+assert len(app.cells) == N_SEG, "切换语言后热力图应恢复"
+assert app.cells[0]["errors"] == 2, "切换语言后单元格数据应恢复"
+app._set_language("en")
+app.update()
+assert app.btn_start.cget("text") == "Start scan"
+assert "quick scan" in app.txt_summary.get("1.0", "end")
+print("Language switch OK (en <-> zh; UI/log/summary/heatmap restored)")
+
+# ---- 关于窗口（作者留空） ----
+app._show_about()
+app.update()
+about_win = [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"]
+assert about_win, "About window should open"
+about_txt = about_win[0].winfo_children()[0].winfo_children()[0].get("1.0", "end")
+assert "HD Tune Style Disk Error Scanner" in about_txt
+assert "Author:" in about_txt and about_txt.rstrip().endswith("Author:"), \
+    "author field should be left blank"
+print("About window OK (intro shown, author blank)")
+
+# ---- 失败路径（不弹窗，走横幅） ----
+popped.clear()
+app._on_failed("test failure message")
+app.update()
+assert not popped, "failure must use the in-app banner, not dialogs: %r" % (popped,)
+assert "test failure message" in app.lbl_banner.cget("text")
+
+app.destroy()
+root.destroy()
+print("\nGUI smoke test: all passed")
