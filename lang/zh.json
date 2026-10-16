@@ -72,6 +72,8 @@
   "gui.about.title": "关于",
   "gui.about.body": "HD Doc - 只读式 HD Tune 风格磁盘错误扫描工具。",
   "gui.target": "目标:",
+  "gui.settings": "扫描设置",
+  "gui.disk_n": "磁盘 {n}",
   "gui.refresh": "刷新磁盘",
   "gui.browse_file": "浏览文件…",
   "gui.bs": "块大小:",

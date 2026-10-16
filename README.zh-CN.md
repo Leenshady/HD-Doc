@@ -54,7 +54,7 @@ python build_exe.py
 ```
 
 产出 `dist/HD_Doc.exe`（单文件）。构建机上找得到 fio.exe 时会一并打入，
-`lang/` 语言文件也会打入。需要带 tkinter 且装有 PyInstaller 的 Python。
+`lang/` 语言文件与 `img/` 图标也会打入。需要带 tkinter 且装有 PyInstaller 的 Python。
 
 ## 测试
 
@@ -83,6 +83,7 @@ HD_Doc_gui.py   tkinter 界面（中英双语）
 HD_Doc.py       入口：分发到 CLI 或 GUI
 build_exe.py    PyInstaller 打包
 lang/           界面文案（en.json、zh.json）
+img/            程序图标（HD_Doc.ico、HD_Doc.png）
 test/           测试套件（python test/test_units.py 等）
 ```
 

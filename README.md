@@ -57,9 +57,9 @@ and register the code in `LANGUAGES` in `HD_Doc_core.py`.
 python build_exe.py
 ```
 
-Produces `dist/HD_Doc.exe` (single file). fio.exe and the `lang/` files are
-bundled when found on the build machine. Requires a Python with tkinter and
-PyInstaller.
+Produces `dist/HD_Doc.exe` (single file). fio.exe, the `lang/` files and the
+`img/` icon are bundled when found on the build machine. Requires a Python
+with tkinter and PyInstaller.
 
 ## Tests
 
@@ -88,6 +88,7 @@ HD_Doc_gui.py   tkinter GUI (bilingual)
 HD_Doc.py       entry point: dispatches to CLI or GUI
 build_exe.py    PyInstaller packaging
 lang/           interface strings (en.json, zh.json)
+img/            program icon (HD_Doc.ico, HD_Doc.png)
 test/           test suites (python test/test_units.py, ...)
 ```
 

@@ -1027,11 +1027,13 @@ def resolve_fio(user_path=None):
 
 
 def extract_drive_path(text):
-    """从下拉框标签中提取纯净裸设备路径。
+    """从输入中提取纯净裸设备路径（防御性助手）。
 
-    GUI 下拉框的值为展示标签，形如：
+    GUI 下拉框现在只显示 型号+容量，选中项的真实路径经
+    HDDocApp._target_paths 映射解析（见 HD_Doc_gui._refresh_drives）；
+    本函数兜底兼容历史上带路径前缀的标签串，形如：
         \\\\.\\PhysicalDrive1  —  WDC WD10EZEX-22MFCA0 | 931.5 GB | ATA
-    而 fio 的 --filename 与 CreateFileW 只接受纯净盘号路径（设备名不含空格），
+    fio 的 --filename 与 CreateFileW 只接受纯净盘号路径（设备名不含空格），
     整串标签传进去会直接打不开设备（实测 fio: failed opening blockdev），
     且容量查询也会因路径非法而失败、导致分段退化为 1 段。
     裸设备路径本身不含空白字符，故取开头到第一个空白/竖线为止。"""

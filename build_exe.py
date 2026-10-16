@@ -24,6 +24,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "HD_Doc.py")
 LANG_DIR = os.path.join(HERE, "lang")
+IMG_DIR = os.path.join(HERE, "img")
 NAME = "HD_Doc"
 
 # 与 HD_Doc.resolve_fio 一致的候选列表（打包时用于 --add-binary）
@@ -96,6 +97,16 @@ def main():
         print("[信息] 将内置语言文件: %s" % LANG_DIR)
     else:
         print("[警告] 未找到 %s，打包版将无界面文案" % LANG_DIR)
+    icon = os.path.join(IMG_DIR, "HD_Doc.ico")
+    if os.path.isfile(icon):
+        # 程序图标（同时进入 exe 资源与运行时 img/ 数据）
+        cmd += ["--icon", icon]
+        print("[信息] 将使用程序图标: %s" % icon)
+    else:
+        print("[警告] 未找到 %s，exe 与窗口将使用默认图标" % icon)
+    if os.path.isdir(IMG_DIR):
+        # img/ → 解压后位于 sys._MEIPASS/img/（窗口标题栏/任务栏图标）
+        cmd += ["--add-data", "%s;img" % IMG_DIR]
     cmd.append(APP)
 
     print("[信息] 执行: %s" % " ".join(cmd))

@@ -29,9 +29,28 @@ import HD_Doc_core as core                      # 业务逻辑全部经 core
 from HD_Doc_core import *                       # 常用名直接可用（调用点不变）
 from HD_Doc_core import _pythonw_path           # 下划线名需显式导入
 
-# 横幅级别 → 前景色
+# 横幅级别 → 前景色 / 背景色（tk.Label 才能设背景，做成浅色卡片式横幅）
 BANNER_COLORS = {"info": "#185FA5", "ok": "#3B6D11",
                  "warn": "#B36A00", "error": "#A32D2D"}
+BANNER_BG = {"info": "#EFF6FF", "ok": "#F0FDF4",
+             "warn": "#FFFBEB", "error": "#FEF2F2"}
+
+# 主题色（现代化 UI 的品牌色，与 Windows 11 的蓝色 accent 接近）
+ACCENT = "#2563EB"
+ACCENT_HOVER = "#1D4ED8"
+ACCENT_PRESS = "#1E40AF"
+INK = "#0F172A"          # 主文字
+INK_MUTED = "#64748B"    # 次要文字
+BORDER = "#E2E8F0"       # 卡片描边
+SURFACE = "#FFFFFF"      # 卡片底
+CANVAS_BG = "#F1F5F9"    # 窗口底
+
+
+def _resource_dir():
+    """img/ 资源目录：打包版在 sys._MEIPASS，源码版在脚本同级"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "img")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "img")
 
 
 def restart_app():
@@ -53,6 +72,8 @@ class HDDocApp(tk.Tk):
         self.geometry("1140x820")
         self.minsize(980, 700)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._target_paths = {}       # 下拉标签 → 裸设备路径（型号显示用）
+        self._icon_img = None         # PhotoImage 引用，防止被 GC
 
         self.q = queue.Queue()
         self.scanner = None
@@ -81,11 +102,96 @@ class HDDocApp(tk.Tk):
         # 界面语言（切换后重启重载，见 _set_language / restart_app）
         self.var_lang = tk.StringVar(value=get_language())
 
+        self._setup_theme()
+        self._set_window_icon()
         self._build_ui()
         self._refresh_drives()
         self._center_on_screen()
         self._poll_after = self.after(100, self._poll_queue)
         self._admin_after = self.after(200, self._startup_admin_check)
+
+    # ---------------------------------------------------------- 主题与图标
+    def _setup_theme(self):
+        """clam 主题 + 品牌色定制（Windows 默认 vista 主题可编程性太弱）"""
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            return
+        style.configure(".", font=("Segoe UI", 9), foreground=INK,
+                        background=CANVAS_BG)
+        style.configure("TFrame", background=CANVAS_BG)
+        # 卡片式分区
+        style.configure("TLabelframe", background=SURFACE, bordercolor=BORDER,
+                        borderwidth=1, relief="solid", labeloutside=False)
+        style.configure("TLabelframe.Label", font=("Segoe UI", 9, "bold"),
+                        foreground=INK, background=SURFACE)
+        style.configure("Card.TFrame", background=SURFACE)
+        # 文本
+        style.configure("TLabel", foreground=INK, background=SURFACE)
+        style.configure("Flat.TLabel", background=CANVAS_BG)
+        style.configure("Muted.TLabel", foreground=INK_MUTED,
+                        background=SURFACE)
+        style.configure("Banner.TLabel", foreground=INK, background=SURFACE,
+                        padding=(10, 6))
+        # 按钮
+        style.configure("TButton", padding=(10, 4), bordercolor=BORDER,
+                        foreground=INK, background="#F8FAFC")
+        style.map("TButton",
+                  background=[("active", "#EFF6FF"), ("pressed", "#E2E8F0")],
+                  bordercolor=[("active", ACCENT)])
+        style.configure("Accent.TButton", padding=(12, 5),
+                        background=ACCENT, foreground="#FFFFFF",
+                        bordercolor=ACCENT, focuscolor=ACCENT,
+                        font=("Segoe UI", 9, "bold"))
+        style.map("Accent.TButton",
+                  background=[("active", ACCENT_HOVER),
+                              ("pressed", ACCENT_PRESS)])
+        style.configure("Danger.TButton", foreground="#B91C1C")
+        # 输入控件
+        style.configure("TCombobox", padding=(4, 2), bordercolor=BORDER,
+                        fieldbackground=SURFACE, arrowcolor=INK_MUTED)
+        style.configure("TEntry", padding=(4, 2), bordercolor=BORDER,
+                        fieldbackground=SURFACE)
+        style.configure("TCheckbutton", foreground=INK, background=SURFACE,
+                        focuscolor=ACCENT)
+        # 页签
+        style.configure("TNotebook", background=CANVAS_BG, bordercolor=BORDER,
+                        tabmargins=(2, 2, 2, 0))
+        style.configure("TNotebook.Tab", padding=(14, 5),
+                        background="#E2E8F0", foreground=INK_MUTED,
+                        borderwidth=0)
+        style.map("TNotebook.Tab",
+                  background=[("selected", SURFACE)],
+                  foreground=[("selected", INK)],
+                  font=[("selected", ("Segoe UI", 9, "bold"))])
+        # 表格与进度条
+        style.configure("Treeview", rowheight=26, background=SURFACE,
+                        fieldbackground=SURFACE, foreground=INK,
+                        bordercolor=BORDER)
+        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"),
+                        background="#F1F5F9", foreground=INK,
+                        padding=(6, 4), relief="flat")
+        style.map("Treeview.Heading", background=[("active", "#E2E8F0")])
+        style.configure("Horizontal.TProgressbar", background=ACCENT,
+                        troughcolor="#E2E8F0", thickness=8,
+                        borderwidth=0)
+
+    def _set_window_icon(self):
+        """标题栏图标（.ico）+ 任务栏/Alt-Tab 图标（.png）；缺失时静默跳过"""
+        d = _resource_dir()
+        try:
+            self.iconbitmap(os.path.join(d, "HD_Doc.ico"))
+        except Exception:
+            pass
+        try:
+            # master=self 必须显式指定：默认 photo 会挂到第一个 Tk 实例上，
+            # 而 iconphoto 在本窗口调用时拒绝跨实例的 photo（TclError）
+            img = tk.PhotoImage(master=self, file=os.path.join(d, "HD_Doc.png"))
+            self.iconphoto(False, img)
+            self._icon_img = img      # 持有引用，防止被垃圾回收
+        except Exception:
+            pass
 
     # ---------------------------------------------------------- 文案辅助
     # 语言在启动时确定（切换语言会重启程序），界面文案只需取一次
@@ -140,8 +246,12 @@ class HDDocApp(tk.Tk):
 
         self._build_menubar()
 
-        bar = ttk.Frame(self)
-        bar.pack(fill="x", **pad)
+        # ---- 控制区（卡片式 LabelFrame）----
+        outer = self._reg(ttk.LabelFrame(self, padding=(10, 6, 10, 8)),
+                          "gui.settings")
+        outer.pack(fill="x", padx=8, pady=(8, 4))
+        bar = ttk.Frame(outer, style="Card.TFrame")
+        bar.pack(fill="x")
 
         self._reg(ttk.Label(bar), "gui.target").grid(row=0, column=0, sticky="w")
         self.var_target = tk.StringVar()
@@ -200,7 +310,8 @@ class HDDocApp(tk.Tk):
 
         btn_bar = ttk.Frame(bar)
         btn_bar.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        self.btn_start = self._reg(ttk.Button(btn_bar, command=self._start_scan),
+        self.btn_start = self._reg(ttk.Button(btn_bar, style="Accent.TButton",
+                                              command=self._start_scan),
                                    "gui.start")
         self.btn_start.pack(side="left")
         self.btn_stop = self._reg(ttk.Button(btn_bar, command=self._stop_scan,
@@ -211,7 +322,7 @@ class HDDocApp(tk.Tk):
                                                state="disabled"),
                                     "gui.export")
         self.btn_export.pack(side="left")
-        self._reg(ttk.Label(btn_bar, foreground="#666"),
+        self._reg(ttk.Label(btn_bar, style="Muted.TLabel"),
                   "gui.hint").pack(side="left", padx=12)
         self.lbl_admin = self._reg(ttk.Label(btn_bar), "gui.perm_checking")
         self.lbl_admin.pack(side="left", padx=(16, 0))
@@ -224,38 +335,44 @@ class HDDocApp(tk.Tk):
         bar.columnconfigure(1, weight=1)
 
         # ---- 热力图 ----
-        map_frame = self._reg(ttk.LabelFrame(self), "gui.map_title")
-        map_frame.pack(fill="both", expand=True, **pad)
-        self.canvas_map = tk.Canvas(map_frame, bg="#FFFFFF", highlightthickness=0)
+        map_frame = self._reg(ttk.LabelFrame(self, padding=(8, 6, 8, 6)),
+                              "gui.map_title")
+        map_frame.pack(fill="both", expand=True, padx=8, pady=4)
+        self.canvas_map = tk.Canvas(map_frame, bg=SURFACE, highlightthickness=0)
         self.canvas_map.pack(fill="both", expand=True, padx=4, pady=4)
         self.canvas_map.bind("<Motion>", self._on_canvas_motion)
         self.canvas_map.bind("<Leave>", lambda e: self.lbl_hover.config(text=""))
 
-        legend = ttk.Frame(map_frame)
+        legend = ttk.Frame(map_frame, style="Card.TFrame")
         legend.pack(fill="x", padx=4)
-        self.lbl_hover = ttk.Label(legend, text="", anchor="w")
+        self.lbl_hover = ttk.Label(legend, text="", anchor="w",
+                                   style="Muted.TLabel")
         self.lbl_hover.pack(side="left", fill="x", expand=True)
         self._legend_labels = []
         for color, key in ((COLOR_OK, "ok"), (COLOR_SLOW, "slow"),
                            (COLOR_BAD, "bad"), (COLOR_ERROR, "error"),
                            (COLOR_PENDING, "pending")):
-            tk.Frame(legend, bg=color, width=12, height=12).pack(side="left",
-                                                                 padx=(8, 2))
-            lbl = ttk.Label(legend, text=status_text(key))
+            tk.Frame(legend, bg=color, width=12, height=12,
+                     highlightbackground=BORDER, highlightthickness=1
+                     ).pack(side="left", padx=(8, 2))
+            lbl = ttk.Label(legend, text=status_text(key),
+                            style="Muted.TLabel")
             lbl.pack(side="left")
             self._legend_labels.append((lbl, key))
 
         # ---- 状态行 ----
         st = ttk.Frame(self)
-        st.pack(fill="x", **pad)
+        st.pack(fill="x", padx=8, pady=4)
         self.progress = ttk.Progressbar(st, maximum=100)
-        self.progress.pack(fill="x", side="top", pady=(0, 4))
+        self.progress.pack(fill="x", side="top", pady=(0, 6))
         # 结果横幅：替代此前的 messagebox，扫描结果/错误在界面内展示
-        self.lbl_banner = ttk.Label(st, text="", anchor="w",
-                                    foreground="#185FA5",
-                                    font=("Segoe UI", 9, "bold"))
-        self.lbl_banner.pack(fill="x", pady=(0, 4))
-        row = ttk.Frame(st)
+        self.lbl_banner = tk.Label(st, text="", anchor="w",
+                                   foreground="#185FA5",
+                                   bg=BANNER_BG["info"],
+                                   font=("Segoe UI", 9, "bold"),
+                                   padx=10, pady=6)
+        self.lbl_banner.pack(fill="x", pady=(0, 6))
+        row = ttk.Frame(st, style="Card.TFrame", padding=(10, 6))
         row.pack(fill="x")
         self.lbl_progress = self._reg(ttk.Label(row, width=16), "gui.progress")
         self.lbl_progress.pack(side="left")
@@ -267,13 +384,13 @@ class HDDocApp(tk.Tk):
         self.lbl_eta.pack(side="left")
         self.lbl_errors = self._reg(ttk.Label(row, width=12), "gui.errors")
         self.lbl_errors.pack(side="left")
-        self.lbl_state = self._reg(ttk.Label(row, foreground="#666"),
+        self.lbl_state = self._reg(ttk.Label(row, style="Muted.TLabel"),
                                    "gui.state_ready")
         self.lbl_state.pack(side="left", padx=10)
 
         # ---- 详情页 ----
         self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=False, **pad)
+        self.nb.pack(fill="both", expand=False, padx=8, pady=(4, 8))
         self.txt_log = ScrolledText(self.nb, height=9, font=("Consolas", 9),
                                     wrap="word")
         self._reg_tab(self.nb, self.txt_log, "gui.tab_log")
@@ -326,11 +443,23 @@ class HDDocApp(tk.Tk):
         win.title(tr("gui.about.title"))
         win.transient(self)
         win.resizable(False, False)
-        frm = ttk.Frame(win, padding=20)
+        try:
+            win.iconbitmap(os.path.join(_resource_dir(), "HD_Doc.ico"))
+        except Exception:
+            pass
+        frm = ttk.Frame(win, padding=24, style="Card.TFrame")
         frm.pack(fill="both", expand=True)
-        tk.Label(frm, text=tr("gui.about.body"), wraplength=400,
-                 justify="center").pack()
-        ttk.Button(frm, text="OK", command=win.destroy).pack(pady=(14, 0))
+        head = ttk.Frame(frm, style="Card.TFrame")
+        head.pack(fill="x")
+        if self._icon_img is not None:
+            ttk.Label(head, image=self._icon_img).pack(side="left",
+                                                       padx=(0, 10))
+        ttk.Label(head, text=tr("gui.title", ver=VERSION),
+                  font=("Segoe UI", 12, "bold")).pack(side="left")
+        tk.Label(frm, text=tr("gui.about.body"), wraplength=420,
+                 justify="center", pady=12).pack()
+        ttk.Button(frm, text="OK", command=win.destroy,
+                   style="Accent.TButton").pack(pady=(8, 0))
         # 模态 + 居中于父窗口
         win.grab_set()
         self.update_idletasks()
@@ -340,12 +469,25 @@ class HDDocApp(tk.Tk):
 
     # ---------------------------------------------------------- 交互
     def _refresh_drives(self):
-        values = []
+        r"""刷新目标下拉框：只显示 硬盘型号 + 容量（不显示 \\.\PhysicalDriveN）。
+
+        选中项的真实设备路径存放在 self._target_paths（label → path），
+        _start_scan 解析时先查映射，查不到再按普通文件路径规范化
+        （兼容 _browse_file 直接设置的路径）。
+        """
+        self._target_paths = {}
+        values, seen = [], {}
         for d in list_drives():
-            label = "%s  —  %s | %s | %s" % (
-                d["path"], d["model"] or tr("unknown"),
-                fmt_bytes(d["size"]),
-                bus_type_name(d["bus"]) if d["bus"] is not None else "")
+            model = (d["model"] or "").strip()
+            name = model or tr("gui.disk_n", n=d["index"])
+            size = fmt_bytes(d["size"]) if d["size"] else ""
+            label = "%s  —  %s" % (name, size) if size else name
+            if label in seen:   # 同型号同容量（双盘）时加序号区分
+                seen[label] += 1
+                label = "%s  (#%d)" % (label, seen[label])
+            else:
+                seen[label] = 1
+            self._target_paths[label] = d["path"]
             values.append(label)
         self.combo_target["values"] = values
         if values and not self.var_target.get():
@@ -372,7 +514,8 @@ class HDDocApp(tk.Tk):
     def _banner(self, key, level="info", **kw):
         """界面内结果横幅（替代弹窗）"""
         self.lbl_banner.config(text=tr(key, **kw),
-                               foreground=BANNER_COLORS.get(level, "#185FA5"))
+                               foreground=BANNER_COLORS.get(level, "#185FA5"),
+                               bg=BANNER_BG.get(level, BANNER_BG["info"]))
 
     def _log(self, stream, key, **kw):
         """写入一条日志（插入时定型；切换语言会重启重载）"""
@@ -382,6 +525,8 @@ class HDDocApp(tk.Tk):
         self.txt_log.insert("end", "[%s] %s\n" % (stream, line))
         if int(self.txt_log.index("end-1c").split(".")[0]) > 600:
             self.txt_log.delete("1.0", "200.0")
+        # 扫描过程中日志持续追加：固定滚动到最后一行
+        self.txt_log.see("end")
 
     # ---------------------------------------------------------- 管理员权限
     def _update_admin_ui(self):
@@ -443,7 +588,9 @@ class HDDocApp(tk.Tk):
 
     # ---------------------------------------------------------- 扫描控制
     def _start_scan(self):
-        target = normalize_target_path(self.var_target.get())
+        # 下拉标签（型号+容量）→ 设备路径；手动输入的路径走规范化
+        target = (self._target_paths.get(self.var_target.get())
+                  or normalize_target_path(self.var_target.get()))
         if not target:
             self._banner("gui.msg.no_target", "warn")
             self._log("warn", "gui.msg.no_target")
@@ -538,7 +685,7 @@ class HDDocApp(tk.Tk):
         self.txt_summary.delete("1.0", "end")
         self.summary = None
         self.btn_export.config(state="disabled")
-        self.lbl_banner.config(text="")
+        self.lbl_banner.config(text="", bg=BANNER_BG["info"])
         self.scan_start_ts = time.time()
         self.scan_bs = bs
         self.scan_quick = quick

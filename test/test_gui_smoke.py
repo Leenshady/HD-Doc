@@ -236,6 +236,34 @@ assert "Author" not in about_txt and "作者" not in about_txt, about_txt
 assert "\n" not in about_txt, "About must be a single line: %r" % about_txt
 print("About window OK (one-line intro, no author line)")
 
+# ---- 目标下拉框：只显示 型号+容量，路径走 _target_paths 映射 ----
+app._refresh_drives()
+app.update()
+vals = list(app.combo_target["values"])
+if vals:   # 本机枚举到物理盘时才断言（无盘/权限受限时空列表也合法）
+    for v in vals:
+        assert "PhysicalDrive" not in v, \
+            "target dropdown must show model+capacity only: %r" % v
+    assert app._target_paths, "label→path mapping must be populated"
+    assert all(p.startswith("\\\\.\\PhysicalDrive") or p.lower().startswith("//./")
+               for p in app._target_paths.values()), app._target_paths
+    assert app.var_target.get() in app._target_paths or not app.var_target.get()
+print("Drive labels OK (model + capacity only, %d drives, mapping=%d)"
+      % (len(vals), len(app._target_paths)))
+
+# ---- 日志自动滚动到底部 ----
+app.txt_log.delete("1.0", "end")
+for i in range(120):
+    app._log_line("info", "scroll probe line %d" % i)
+app.update()
+_y0, _y1 = app.txt_log.yview()
+assert _y1 >= 0.999, "log should stay scrolled to the last line: yview=%r" % ((_y0, _y1),)
+print("Log auto-scroll OK (120 lines, yview bottom=%.3f)" % _y1)
+
+# ---- 程序图标（标题栏 ico + 任务栏 png） ----
+assert app._icon_img is not None, "window icon (img/HD_Doc.png) should be loaded"
+print("Window icon OK (iconphoto set)")
+
 # ---- 失败路径（不弹窗，走横幅） ----
 popped.clear()
 app._on_failed("test failure message")

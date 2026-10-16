@@ -72,6 +72,8 @@
   "gui.about.title": "About",
   "gui.about.body": "HD Doc - a read-only, HD Tune style disk error scanner.",
   "gui.target": "Target:",
+  "gui.settings": "Scan settings",
+  "gui.disk_n": "Disk {n}",
   "gui.refresh": "Refresh drives",
   "gui.browse_file": "Browse file...",
   "gui.bs": "Block size:",
