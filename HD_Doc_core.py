@@ -186,8 +186,8 @@ def set_language(lang):
 
 
 # 界面主题（ttkbootstrap 主题名）：默认浅色，可切换深色；持久化方式与
-# 语言一致（同一份 config.json）。GUI 切换主题 = 保存偏好并重启程序，
-# 以新主题重建全部控件（与语言切换同一机制）。
+# 语言一致（同一份 config.json）。GUI 切换主题 = 保存偏好 + 实时
+# theme_use() 换色（原生 tk 控件手工同步），不重启进程。
 # 环境变量 HDTUNE_THEME=bootstrap-light|bootstrap-dark 可临时覆盖（测试用）。
 THEMES = ("bootstrap-light", "bootstrap-dark")
 DEFAULT_THEME = "bootstrap-light"

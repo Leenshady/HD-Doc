@@ -28,8 +28,10 @@ python HD_Doc.py
 
 Pick a target from the dropdown, choose block size / segment size, press
 **Start scan**. Switch language or light/dark theme from the *Language* /
-*View* menus (the program restarts to reload the interface; both choices
-are remembered).
+*View* menus — both take effect immediately (the interface is rebuilt or
+re-themed in place, no restart; both choices are remembered). You can
+even switch while a scan is running: the scan, its progress and results
+are untouched.
 
 CLI (English output):
 

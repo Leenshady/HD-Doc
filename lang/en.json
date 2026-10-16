@@ -161,8 +161,6 @@
   "gui.msg.engine_bad_title": "IO engine unavailable",
   "gui.msg.engine_bad": "Current fio does not support the '{e}' engine; scan not started.\n\nEngines actually supported by this fio:\n{list}\n\nNote: libaio / posixaio are native Linux engines; the Windows build of fio does not include them and fails with \"failed to load engine\". On Windows use {win}.",
   "gui.msg.exit_title": "Exit",
-  "gui.msg.lang_busy": "Finish or stop the current scan before switching language.",
-  "gui.msg.theme_busy": "Finish or stop the current scan before switching theme.",
   "gui.btn.yes": "Yes",
   "gui.btn.no": "No",
   "gui.msg.exit_scanning": "A scan is in progress. Exit anyway?",

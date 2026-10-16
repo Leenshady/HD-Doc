@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """GUI 冒烟测试：用系统 Python（带 tkinter + ttkbootstrap）实例化应用并驱动
-各事件处理器。覆盖：英文默认界面、浅色默认主题、语言切换（保存偏好+重启）、
-主题切换（保存偏好+重启）、关于窗口、事件流、完成/错误/快速汇总、横幅替代弹窗。"""
+各事件处理器。覆盖：英文默认界面、浅色默认主题、语言切换（原地重建界面，
+不重启进程）、主题切换（实时 theme_use 换色）、关于窗口、事件流、
+完成/错误/快速汇总、横幅替代弹窗。"""
 import os
 import sys
 import types
@@ -189,74 +190,88 @@ assert "quick scan" in txt and "% of capacity" in txt, \
     "quick-scan summary should contain the coverage line"
 print("Quick-scan summary OK (with coverage line)")
 
-# ---- 语言切换：保存偏好 + 重启（测试里截断重启本身） ----
+# ---- 语言切换：原地重建界面（不重启进程）----
 import HD_Doc_core as core
 
-restarts = []
-orig_restart = H.restart_app
-H.restart_app = lambda: restarts.append(True)
+# 先 seed 一条可翻译日志：切换后应按新语言重放
+# （旧实现靠 execv 重启重载，本条验证结构化日志机制）
+app._log("info", "gui.log.admin_ok")
 
-# 扫描中切换：只给界面内提示，不重启、不改语言
 class _LiveWorker:
     def is_alive(self):
         return True
 
-app.worker = _LiveWorker()
+# 扫描中切换：不再禁止——重建只换控件，不动扫描线程/fio 子进程
+live = _LiveWorker()
+app.summary = None                      # 模拟"扫描进行中、尚无结果"
+app._set_state("gui.state_scanning")    # 与 _start_scan 同一入口
+app.worker = live
 app._set_language("zh")
 app.update()
-assert restarts == [], "switching during a scan must not restart"
-assert core.get_language() == "en", "language must not change during a scan"
-assert "scan" in app.lbl_banner.cget("text").lower(), \
-    app.lbl_banner.cget("text")
-app.worker = None
-print("Language switch during scan blocked (in-app hint) OK")
-
-# 正常切换：持久化 + 请求重启；同一语言不重复重启
-app._set_language("zh")
-app.update()
-assert restarts == [True], "switching language should restart the app"
 assert core.get_language() == "zh"
 assert core.load_config().get("language") == "zh", \
     "choice must persist to config"
-app._set_language("zh")
-assert restarts == [True], "same language must not restart again"
-
-H.restart_app = orig_restart
-core.set_language("en")   # 还原英文，避免影响后续用例
-app.var_lang.set("en")
-print("Language switch OK (persist + restart; blocked while scanning)")
-
-# ---- 主题切换：保存偏好 + 重启（测试里截断重启本身） ----
-restarts = []
-orig_restart = H.restart_app
-H.restart_app = lambda: restarts.append(True)
-
-# 扫描中切换：只给界面内提示，不重启、不改主题
-app.worker = _LiveWorker()
-app._set_theme("bootstrap-dark")
-app.update()
-assert restarts == [], "switching theme during a scan must not restart"
-assert core.get_theme() == "bootstrap-light", \
-    "theme must not change during a scan"
-assert "scan" in app.lbl_banner.cget("text").lower(), \
-    app.lbl_banner.cget("text")
+assert app.btn_start.cget("text") == "▶ 开始扫描", app.btn_start.cget("text")
+# 扫描状态跨重建保留（旧实现重启后全丢，才被迫禁止扫描中切换）
+assert str(app.btn_start.cget("state")) == "disabled", "start stays disabled"
+assert str(app.btn_stop.cget("state")) == "normal", "stop stays enabled"
+assert app.worker is live, "rebuild must not touch the scan thread"
+assert app.lbl_state.cget("text") == "扫描中…", app.lbl_state.cget("text")
+# 热力图数据跨重建保留（errors=2：事件流 1 次 + 错误场景汇总 1 次）
+assert len(app.cells) == N_SEG, len(app.cells)
+assert app.cells[0]["errors"] == 2
+assert app.cells[18]["median"] == 2200.0 + 18 * 10
+# 日志：可翻译条目按新语言重放；fio 原始输出原样保留（不过 i18n）
+log_zh = app.txt_log.get("1.0", "end")
+assert "管理员" in log_zh, log_zh
+assert "fio: test" in log_zh, "raw fio output must survive verbatim"
 app.worker = None
-print("Theme switch during scan blocked (in-app hint) OK")
+print("Language switch during scan OK (in-place rebuild; scan state kept)")
 
-# 正常切换：持久化 + 请求重启；同一主题不重复重启
+# 正常切换（带回已完成的结果）：结果区按新语言重放，选择持久化
+app.summary = summary                   # 还原一轮已完成扫描
+app._set_language("en")                 # zh → en 反向切换
+app.update()
+assert core.get_language() == "en"
+assert app.btn_start.cget("text") == "Start scan"
+assert "Block size" in app.txt_summary.get("1.0", "end"), \
+    "summary page must be re-rendered in the new language"
+assert "Scan complete" in app.lbl_banner.cget("text"), \
+    "banner must be replayed in the new language"
+assert app.nb.select() == str(app.txt_summary), "selected tab must be kept"
+assert len(app.cells) == N_SEG and app.cells[0]["errors"] == 2
+app._set_language("en")
+assert app.btn_start.cget("text") == "Start scan", "same language is a no-op"
+# 还原空闲态按钮（后续用例不关心，保持界面自洽）
+app.btn_start.config(state="normal")
+app.btn_stop.config(state="disabled")
+print("Language switch OK (in-place rebuild; results/log/banner replayed)")
+
+# ---- 主题切换：实时 theme_use（不重启进程，UI 不重建）----
+app.worker = _LiveWorker()              # 扫描中同样允许切换
 app._set_theme("bootstrap-dark")
 app.update()
-assert restarts == [True], "switching theme should restart the app"
 assert core.get_theme() == "bootstrap-dark"
 assert core.load_config().get("theme") == "bootstrap-dark", \
     "theme choice must persist to config"
-app._set_theme("bootstrap-dark")
-assert restarts == [True], "same theme must not restart again"
-
-H.restart_app = orig_restart
-core.set_theme("bootstrap-light")   # 还原浅色，避免影响后续用例
-app.var_theme.set("bootstrap-light")
-print("Theme switch OK (persist + restart; blocked while scanning)")
+assert app.style.theme_use() == "bootstrap-dark"
+# 原生 tk 控件同步到新主题色板（ttk 控件由主题引擎自动换色）
+assert str(app.canvas_map.cget("bg")).lower() == app.style.colors.bg.lower()
+for swatch in app._legend_swatches:
+    assert str(swatch.cget("highlightbackground")).lower() \
+        == app.style.colors.border.lower()
+# 主题切换不重建界面：控件原样（英文文案还在即证明未重建）
+assert app.btn_start.cget("text") == "Start scan"
+assert app.worker is not None
+app.worker = None
+app._set_theme("bootstrap-dark")        # 同主题不重复动作
+assert app.style.theme_use() == "bootstrap-dark"
+# 切回浅色，避免影响后续用例
+app._set_theme("bootstrap-light")
+app.update()
+assert app.style.theme_use() == "bootstrap-light"
+assert str(app.canvas_map.cget("bg")).lower() == app.style.colors.bg.lower()
+print("Theme switch OK (live theme_use; native widgets follow)")
 
 # ---- 关于窗口（一行简介，无作者行） ----
 app._show_about()
