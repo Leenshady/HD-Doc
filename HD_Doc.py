@@ -5,9 +5,9 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
 
 代码结构（UI 与业务逻辑分离）：
   HD_Doc_core.py   业务逻辑：权限/提权、分段规划、磁盘枚举、fio 扫描引擎、
-                   报告导出（零 tkinter 依赖）
+                   报告导出（零 GUI 依赖）
   HD_Doc_cli.py    命令行模式：只 import HD_Doc_core，不碰任何 UI
-  HD_Doc_gui.py    GUI 模式：tkinter 界面，只 import HD_Doc_core
+  HD_Doc_gui.py    GUI 模式：ttkbootstrap 界面（浅色/深色主题），只 import HD_Doc_core
   HD_Doc.py   本文件：参数解析与分发（--cli 才会导入 cli 模块）
 
 用法
@@ -26,9 +26,11 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
     HD_Doc.exe --version                        # 验证打包版可运行
 
 注意
-  - 扫描物理磁盘需要管理员权限（fio 才能打开 \\\\.\\PhysicalDriveN）；
-    未提权时程序会自动弹出 UAC 申请提权重启（--no-elevate 或环境变量
-    HDTUNE_NO_AUTO_ELEVATE=1 可关闭该行为；扫描镜像文件无需管理员）
+  - 扫描物理磁盘需要管理员权限（fio 才能打开 \\\\.\\PhysicalDriveN）：
+    GUI 模式在程序启动时即申请提权（弹一次 UAC，不再等扫描时再问；
+    取消则保持标准权限继续运行）；CLI 模式在扫描物理盘时申请
+    （--no-elevate 或环境变量 HDTUNE_NO_AUTO_ELEVATE=1 可关闭该行为；
+    扫描镜像文件无需管理员）
   - 提权重启的子进程使用 pythonw.exe（GUI 子系统）启动，不会再伴随
     命令窗口；CLI 模式提权后输出会自动绑回原终端
   - 本工具只读，不会向磁盘写入任何数据
@@ -46,9 +48,9 @@ from HD_Doc_core import VERSION, IS_WIN, auto_elevate_enabled, _ensure_console, 
 def build_parser():
     ap = argparse.ArgumentParser(
         prog="HD Doc",
-        description="HD Doc: read-only disk error scanner (fio + tkinter)")
+        description="HD Doc: read-only disk error scanner (fio + ttkbootstrap)")
     ap.add_argument("--cli", action="store_true",
-                    help="command-line mode (no tkinter needed)")
+                    help="command-line mode (no GUI toolkit needed)")
     ap.add_argument("--version", action="store_true",
                     help="show version and exit")
     ap.add_argument("--target",
@@ -99,17 +101,22 @@ def main(argv=None):
               % (VERSION, "bundled" if getattr(sys, "frozen", False) else "source"))
         return 0
     if args.cli:
-        # 延迟导入：CLI 路径不加载 tkinter / GUI 代码
+        # 延迟导入：CLI 路径不加载 ttkbootstrap / GUI 代码
         from HD_Doc_cli import cli_main
         return cli_main(args)
     try:
-        # 只有 GUI 模式才导入 tkinter
-        from HD_Doc_gui import HDDocApp
+        # 只有 GUI 模式才导入 ttkbootstrap
+        from HD_Doc_gui import HDDocApp, ensure_admin_at_startup
     except ImportError as e:
-        print("Error: cannot start GUI (no tkinter in this Python? %s)" % e)
-        print("Use the python.org installer (bundles tkinter), or the CLI mode:")
+        print("Error: cannot start GUI (ttkbootstrap not installed? %s)" % e)
+        print("Install it with:  python -m pip install ttkbootstrap")
+        print("Or use the CLI mode:")
         print("  python HD_Doc.py --cli --target <target> --bs 4M")
         return 2
+    # 启动即提权：非管理员时先弹 UAC（不等扫到物理盘再问），确认后由
+    # 提权进程接管、本进程直接退出；取消则保持标准权限继续启动
+    if ensure_admin_at_startup():
+        return 0
     app = HDDocApp()
     app.mainloop()
     return 0

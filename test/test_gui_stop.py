@@ -19,6 +19,8 @@ import time
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 # 固定英文，保证断言确定
 os.environ["HDTUNE_LANG"] = "en"
+# 固定浅色主题，保证断言确定
+os.environ["HDTUNE_THEME"] = "bootstrap-light"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import HD_Doc_gui as H
@@ -48,11 +50,12 @@ def new_app():
     app.canvas_map.winfo_height = lambda: 700
     app.update()
     # 桩掉所有模态框，只记录不阻塞（新版下完成路径不应触发任何一个）
+    # （ttkbootstrap Messagebox 替代 tkinter.messagebox）
     popups = []
-    H.messagebox.askyesno = lambda *a, **k: True
-    H.messagebox.showinfo = lambda *a, **k: popups.append(("info",) + a)
-    H.messagebox.showwarning = lambda *a, **k: popups.append(("warning",) + a)
-    H.messagebox.showerror = lambda *a, **k: popups.append(("error",) + a)
+    H.Messagebox.yesno = lambda *a, **k: True
+    H.Messagebox.show_info = lambda *a, **k: popups.append(("info",) + a)
+    H.Messagebox.show_warning = lambda *a, **k: popups.append(("warning",) + a)
+    H.Messagebox.show_error = lambda *a, **k: popups.append(("error",) + a)
     return root, app, popups
 
 
@@ -140,8 +143,8 @@ app._on_finished(fake2)
 check("C 无弹窗（改为 error 级横幅）", popups, [])
 check("C 横幅为错误警报口径",
       "physical damage" in app.lbl_banner.cget("text"), True)
-check("C 横幅前景色为错误红",
-      str(app.lbl_banner.cget("foreground")), H.BANNER_COLORS["error"])
+check("C 横幅样式为错误级（danger bootstyle）",
+      app.lbl_banner.cget("style"), H.BANNER_BOOTSTYLE["error"] + ".TLabel")
 app._cancel_timers()
 app.destroy()
 root.destroy()

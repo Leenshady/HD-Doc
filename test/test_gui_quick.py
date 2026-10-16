@@ -6,6 +6,7 @@
 import os, sys, time, types
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 os.environ["HDTUNE_LANG"] = "en"
+os.environ["HDTUNE_THEME"] = "bootstrap-light"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import HD_Doc_gui as H
 
@@ -21,10 +22,11 @@ app.canvas_map.winfo_height = lambda: 700
 app.update()
 
 # 镜像文件目标：不需要管理员；桩掉所有模态框防阻塞
-H.messagebox.askyesno = lambda *a, **k: True
-H.messagebox.showinfo = lambda *a, **k: None
-H.messagebox.showwarning = lambda *a, **k: None
-H.messagebox.showerror = lambda *a, **k: None
+# （ttkbootstrap Messagebox：镜像目标不会触发确认框，桩上只为兜底）
+H.Messagebox.yesno = lambda *a, **k: True
+H.Messagebox.show_info = lambda *a, **k: None
+H.Messagebox.show_warning = lambda *a, **k: None
+H.Messagebox.show_error = lambda *a, **k: None
 
 app.var_target.set(BIG)
 app.var_fio.set(FIO)
@@ -94,11 +96,15 @@ print("GUI 导出 OK（英文报告，3 个文件）")
 
 app._cancel_timers()
 app.destroy()
+root.destroy()      # 连同隐藏 root 一起销毁：ttkbootstrap 的 Style 是进程级
+                    # 单例，旧解释器还活着时新 Window 建不出主题对象
+                    # （_theme_objects 为空 → KeyError），与 test_gui_stop 相同做法
 
 # ---- 第二阶段：普通全段扫描（回归：_run_worker 曾在工作线程读 Tk 变量
 # 导致 "main thread is not in main loop"，快速/全段两条路径都要覆盖）----
 SMALL = os.path.abspath(os.path.join("..", "fio_test", "it_small.img"))
 assert os.path.isfile(SMALL), "缺少 8MB 测试镜像"
+root = H.tk.Tk(); root.withdraw()
 app2 = H.HDDocApp(); app2.withdraw()
 app2.geometry("1140x820")
 app2.canvas_map.winfo_width = lambda: 1100

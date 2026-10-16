@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""GUI 冒烟测试：用系统 Python（带 tkinter）实例化应用并驱动各事件处理器。
-覆盖：英文默认界面、语言切换（保存偏好+重启）、关于窗口、事件流、完成/错误/
-快速汇总、横幅替代弹窗。"""
+"""GUI 冒烟测试：用系统 Python（带 tkinter + ttkbootstrap）实例化应用并驱动
+各事件处理器。覆盖：英文默认界面、浅色默认主题、语言切换（保存偏好+重启）、
+主题切换（保存偏好+重启）、关于窗口、事件流、完成/错误/快速汇总、横幅替代弹窗。"""
 import os
 import sys
 import types
@@ -10,12 +10,14 @@ import types
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 # 固定英文，保证断言确定（语言切换行为单独验证）
 os.environ["HDTUNE_LANG"] = "en"
+# 固定浅色主题，保证断言确定（主题切换行为单独验证）
+os.environ["HDTUNE_THEME"] = "bootstrap-light"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import HD_Doc_gui as H
 from HD_Doc_core import plan_grid, tr
 
-# 本模块能导入就说明 tkinter 可用（HD_Doc_gui 顶层 import tkinter）
+# 本模块能导入就说明 ttkbootstrap 可用（HD_Doc_gui 顶层 import ttkbootstrap）
 root = H.tk.Tk()
 root.withdraw()
 app = H.HDDocApp()
@@ -39,8 +41,9 @@ app.update()
 print("App instantiated OK | canvas %dx%d"
       % (app.canvas_map.winfo_width(), app.canvas_map.winfo_height()))
 
-# ---- 默认英文界面 ----
+# ---- 默认英文界面 + 默认浅色主题 ----
 assert "HD Doc" in app.title(), app.title()
+assert app.style.theme_use() == "bootstrap-light", app.style.theme_use()
 admin_txt = app.lbl_admin.cget("text")
 assert "Permission" in admin_txt, admin_txt
 print("Permission status: %s (is_admin=%s)" % (admin_txt, H.is_admin()))
@@ -143,9 +146,10 @@ summary = {
 }
 # 桩掉所有弹窗：完成路径不应弹任何窗（结果只进横幅/汇总页）
 popped = []
-H.messagebox.showwarning = lambda *a, **k: popped.append(("warning", a))
-H.messagebox.showinfo = lambda *a, **k: popped.append(("info", a))
-H.messagebox.showerror = lambda *a, **k: popped.append(("error", a))
+H.Messagebox.show_warning = lambda *a, **k: popped.append(("warning", a))
+H.Messagebox.show_info = lambda *a, **k: popped.append(("info", a))
+H.Messagebox.show_error = lambda *a, **k: popped.append(("error", a))
+H.Messagebox.yesno = lambda *a, **k: popped.append(("yesno", a))
 app._on_finished(summary)
 app.update()
 print("Finish event OK | summary %d chars" % len(app.txt_summary.get("1.0", "end")))
@@ -222,13 +226,45 @@ core.set_language("en")   # 还原英文，避免影响后续用例
 app.var_lang.set("en")
 print("Language switch OK (persist + restart; blocked while scanning)")
 
+# ---- 主题切换：保存偏好 + 重启（测试里截断重启本身） ----
+restarts = []
+orig_restart = H.restart_app
+H.restart_app = lambda: restarts.append(True)
+
+# 扫描中切换：只给界面内提示，不重启、不改主题
+app.worker = _LiveWorker()
+app._set_theme("bootstrap-dark")
+app.update()
+assert restarts == [], "switching theme during a scan must not restart"
+assert core.get_theme() == "bootstrap-light", \
+    "theme must not change during a scan"
+assert "scan" in app.lbl_banner.cget("text").lower(), \
+    app.lbl_banner.cget("text")
+app.worker = None
+print("Theme switch during scan blocked (in-app hint) OK")
+
+# 正常切换：持久化 + 请求重启；同一主题不重复重启
+app._set_theme("bootstrap-dark")
+app.update()
+assert restarts == [True], "switching theme should restart the app"
+assert core.get_theme() == "bootstrap-dark"
+assert core.load_config().get("theme") == "bootstrap-dark", \
+    "theme choice must persist to config"
+app._set_theme("bootstrap-dark")
+assert restarts == [True], "same theme must not restart again"
+
+H.restart_app = orig_restart
+core.set_theme("bootstrap-light")   # 还原浅色，避免影响后续用例
+app.var_theme.set("bootstrap-light")
+print("Theme switch OK (persist + restart; blocked while scanning)")
+
 # ---- 关于窗口（一行简介，无作者行） ----
 app._show_about()
 app.update()
 about_win = [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"]
 assert about_win, "About window should open"
 about_labels = [w for w in about_win[0].winfo_children()[0].winfo_children()
-                if w.winfo_class() == "Label"]
+                if w.winfo_class() in ("Label", "TLabel")]
 assert about_labels, "About should show a one-line label"
 about_txt = about_labels[0].cget("text")
 assert "HD Doc" in about_txt, about_txt

@@ -14,8 +14,8 @@ Runs on Windows (admin rights required for physical disks) and Linux.
 - Quick scan: reads only a head sample of each region, like HD Tune Quick Scan
 - On-demand reports: nothing is saved unless you export (segments.csv,
   errors.csv, summary.txt)
-- GUI (tkinter) and CLI from the same code base; GUI is bilingual
-  (English default, Chinese switchable, choice remembered)
+- GUI (ttkbootstrap, light/dark themes) and CLI from the same code base;
+  GUI is bilingual (English default, Chinese switchable, choice remembered)
 - Read-only by design: no writes to the target at any point
 
 ## Usage
@@ -27,8 +27,9 @@ python HD_Doc.py
 ```
 
 Pick a target from the dropdown, choose block size / segment size, press
-**Start scan**. Switch language from the *Language* menu (the program
-restarts to reload the interface).
+**Start scan**. Switch language or light/dark theme from the *Language* /
+*View* menus (the program restarts to reload the interface; both choices
+are remembered).
 
 CLI (English output):
 
@@ -38,9 +39,12 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --quick
 python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 ```
 
-Scanning a physical disk needs administrator rights; the program asks for
-elevation via UAC automatically (disable with `--no-elevate`). Image files
-need no special rights.
+Scanning a physical disk needs administrator rights. The GUI asks for
+elevation via UAC right at startup — before the window appears, not when
+a scan starts; declining keeps the program running unelevated (image
+files still work). The CLI asks when a physical disk is scanned. Disable
+the automatic request with `--no-elevate`. Image files need no special
+rights.
 
 `--export [DIR]` writes the report into `DIR/HD_Doc_report_<timestamp>/`.
 Without it, no files are written. `--help` lists all options.
@@ -59,14 +63,15 @@ python build_exe.py
 
 Produces `dist/HD_Doc.exe` (single file). fio.exe, the `lang/` files and the
 `img/` icon are bundled when found on the build machine. Requires a Python
-with tkinter and PyInstaller.
+with tkinter and PyInstaller, plus `pip install ttkbootstrap` (see
+`requirements.txt`).
 
 ## Tests
 
 ```
 python test/test_units.py          # core logic + i18n
 python test/test_integration.py    # fio engine, reports, regressions
-python test/test_gui_smoke.py      # GUI behavior incl. language switch
+python test/test_gui_smoke.py      # GUI behavior incl. language/theme switch
 python test/test_gui_stop.py       # stop / race conditions
 python test/test_gui_quick.py      # quick scan end to end
 python test/test_cli_stop.py       # CLI Ctrl+C handling
@@ -84,9 +89,10 @@ is picked up automatically).
 HD_Doc_core.py  business logic: elevation, segments, fio engine, reports
                 (no UI dependency; loads lang/*.json)
 HD_Doc_cli.py   command-line front end (English only)
-HD_Doc_gui.py   tkinter GUI (bilingual)
+HD_Doc_gui.py   ttkbootstrap GUI (bilingual, light/dark theme)
 HD_Doc.py       entry point: dispatches to CLI or GUI
 build_exe.py    PyInstaller packaging
+requirements.txt  runtime dependencies (ttkbootstrap, for the GUI)
 lang/           interface strings (en.json, zh.json)
 img/            program icon (HD_Doc.ico, HD_Doc.png)
 test/           test suites (python test/test_units.py, ...)

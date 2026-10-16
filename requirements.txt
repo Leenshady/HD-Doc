@@ -1,0 +1,4 @@
+# HD Doc runtime dependencies
+#   CLI mode needs none of these (pure standard library);
+#   GUI mode is built on ttkbootstrap (which requires tkinter).
+ttkbootstrap>=2.0

@@ -13,6 +13,8 @@
   - 构建机上能找到 fio 时自动把它打进包（--add-binary），最终 exe 自带
     fio、拷到别的电脑也能用；找不到时也能打包，运行时再让用户指定 fio 路径
   - lang/ 语言文件一并打入（--add-data），界面文案在打包版同样可用
+  - GUI 基于 ttkbootstrap：--collect-all ttkbootstrap 收齐其子模块与
+    静态资源（复选框/进度条元素图、图标字体），否则打包版控件会缺图
   - 本脚本只负责调用 PyInstaller，打包逻辑（隐藏导入等）都写在命令行参数里
 """
 import argparse
@@ -72,12 +74,19 @@ def main():
         print("[错误] 当前 Python 没有 tkinter，打不了的 GUI 版。")
         print("       请换用 python.org 安装包自带的 Python（默认包含 tkinter）。")
         return 2
+    try:
+        import ttkbootstrap  # noqa: F401
+    except ImportError:
+        print("[错误] 未安装 ttkbootstrap（GUI 框架）。请先执行：")
+        print("       python -m pip install ttkbootstrap")
+        return 2
 
     cmd = [sys.executable, "-m", "PyInstaller",
            "--noconfirm", "--clean",
            "--name", NAME,
            "--windowed",            # GUI 子系统：双击无黑色控制台窗口
            "--collect-all", "tkinter",  # 兜底收齐 tkinter 数据文件
+           "--collect-all", "ttkbootstrap",  # ttkbootstrap 子模块 + 静态资源
            ]
     if not args.onedir:
         cmd.append("--onefile")

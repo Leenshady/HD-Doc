@@ -185,6 +185,48 @@ def set_language(lang):
     return True
 
 
+# 界面主题（ttkbootstrap 主题名）：默认浅色，可切换深色；持久化方式与
+# 语言一致（同一份 config.json）。GUI 切换主题 = 保存偏好并重启程序，
+# 以新主题重建全部控件（与语言切换同一机制）。
+# 环境变量 HDTUNE_THEME=bootstrap-light|bootstrap-dark 可临时覆盖（测试用）。
+THEMES = ("bootstrap-light", "bootstrap-dark")
+DEFAULT_THEME = "bootstrap-light"
+_THEME = DEFAULT_THEME
+_THEME_LOADED = False
+
+
+def get_theme():
+    """当前 ttkbootstrap 主题名（"bootstrap-light" / "bootstrap-dark"）。
+
+    与语言一致：HDTUNE_THEME 环境变量仅在首次加载时生效（测试/调试用的
+    一次性覆盖），之后以 set_theme 的进程内切换为准；非法值回退浅色。
+    """
+    global _THEME, _THEME_LOADED
+    if not _THEME_LOADED:
+        env = os.environ.get("HDTUNE_THEME", "").strip()
+        if env in THEMES:
+            _THEME = env
+        else:
+            theme = str(load_config().get("theme", DEFAULT_THEME)).strip()
+            _THEME = theme if theme in THEMES else DEFAULT_THEME
+        _THEME_LOADED = True
+    return _THEME
+
+
+def set_theme(theme):
+    """切换界面主题并持久化；非法主题名返回 False"""
+    global _THEME, _THEME_LOADED
+    theme = str(theme).strip()
+    if theme not in THEMES:
+        return False
+    _THEME = theme
+    _THEME_LOADED = True
+    cfg = load_config()
+    cfg["theme"] = theme
+    save_config(cfg)
+    return True
+
+
 def tr(key, _lang=None, **kw):
     """取指定（或当前）语言的文案；缺失键回退英文，再缺失返回键名本身。
     占位符用 str.format：{name}，避免与文案里的 % 冲突。"""

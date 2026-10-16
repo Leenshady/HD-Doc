@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HD_Doc_gui.py —— GUI 模式（tkinter；只依赖 HD_Doc_core）
+HD_Doc_gui.py —— GUI 模式（ttkbootstrap；只依赖 HD_Doc_core）
 
 本模块只在 GUI 模式下被入口 HD_Doc.py 导入；
-没有 tkinter 的环境（如 --cli 命令行模式）永远不会加载本模块。
+没有 ttkbootstrap 的环境（如 --cli 命令行模式）永远不会加载本模块。
 
 界面语言：默认英文，菜单 Language/语言 可切换中文，选择持久化在
 用户配置目录（见 HD_Doc_core 的 i18n 小节；文案表在 lang/*.json，
 独立于代码）。切换语言即保存偏好并重启程序，以新语言重载整个
 界面。扫描结果/错误提示以界面内横幅与日志展示，尽量不弹窗。
+
+管理员权限：程序启动即申请（入口在创建窗口前调用
+ensure_admin_at_startup，直接弹 UAC，不再先问"是否重启"），
+UAC 确认后由提权后的新进程接管、本进程退出；取消则保持标准
+权限继续运行（扫镜像文件不需要管理员）。扫描物理盘时若仍未
+提权，同样直接弹 UAC，不再弹二次确认框。
+
+界面主题：ttkbootstrap 主题（默认浅色 bootstrap-light，可切换深色
+bootstrap-dark），选择同样持久化；切换主题 = 保存偏好并重启程序，
+以新主题重建全部控件（与语言切换同一机制）。所有控件颜色取自
+当前主题（style.colors），不写死十六进制色值，深浅两主题通用。
 """
 
 import os
@@ -21,29 +32,18 @@ import time
 from bisect import bisect_right
 from datetime import datetime
 
+import ttkbootstrap as ttk
+from ttkbootstrap.dialogs import Messagebox
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from tkinter.scrolledtext import ScrolledText
+from tkinter import filedialog
 
 import HD_Doc_core as core                      # 业务逻辑全部经 core
 from HD_Doc_core import *                       # 常用名直接可用（调用点不变）
 from HD_Doc_core import _pythonw_path           # 下划线名需显式导入
 
-# 横幅级别 → 前景色 / 背景色（tk.Label 才能设背景，做成浅色卡片式横幅）
-BANNER_COLORS = {"info": "#185FA5", "ok": "#3B6D11",
-                 "warn": "#B36A00", "error": "#A32D2D"}
-BANNER_BG = {"info": "#EFF6FF", "ok": "#F0FDF4",
-             "warn": "#FFFBEB", "error": "#FEF2F2"}
-
-# 主题色（现代化 UI 的品牌色，与 Windows 11 的蓝色 accent 接近）
-ACCENT = "#2563EB"
-ACCENT_HOVER = "#1D4ED8"
-ACCENT_PRESS = "#1E40AF"
-INK = "#0F172A"          # 主文字
-INK_MUTED = "#64748B"    # 次要文字
-BORDER = "#E2E8F0"       # 卡片描边
-SURFACE = "#FFFFFF"      # 卡片底
-CANVAS_BG = "#F1F5F9"    # 窗口底
+# 横幅级别 → ttkbootstrap bootstyle（颜色随主题自动切换：浅色/深色通用）
+BANNER_BOOTSTYLE = {"info": "info", "ok": "success",
+                    "warn": "warning", "error": "danger"}
 
 
 def _resource_dir():
@@ -54,7 +54,7 @@ def _resource_dir():
 
 
 def restart_app():
-    """以当前解释器重启本程序（切换语言后重载界面用）。
+    """以当前解释器重启本程序（切换语言/主题后重载界面用）。
 
     源码运行：python HD_Doc.py → python HD_Doc.py
     打包运行：HD_Doc.exe           → HD_Doc.exe
@@ -64,9 +64,36 @@ def restart_app():
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
-class HDDocApp(tk.Tk):
+def ensure_admin_at_startup():
+    """GUI 启动即申请管理员权限（入口 HD_Doc.py 在创建窗口前调用）。
+
+    设计取舍：不在程序跑起来以后再弹"是否重启为管理员"的对话框——
+    UAC 确认本身就是那个询问。非管理员且允许自动提权时直接发起
+    runas 提权重启：
+      - UAC 确认 → 提权进程已启动，返回 True，调用方应退出本进程
+        （窗口都不会创建，不存在"先闪一下再提权"）；
+      - UAC 取消 → 返回 False，以标准权限继续运行（扫镜像文件、
+        刷新磁盘列表都不需要管理员；物理盘扫描入口还会再提权）。
+    --no-elevate / HDTUNE_NO_AUTO_ELEVATE=1 关闭自动提权时直接返回
+    False（照常启动，界面保留"以管理员重启"按钮）。
+    """
+    if is_admin() or not IS_WIN or not auto_elevate_enabled():
+        return False
+    print("[Elevate] Not running as administrator; requesting elevation (UAC)...")
+    ok, _code, err = request_elevation(wait=False, gui=True)
+    if ok:
+        print("[Elevate] Elevated instance started; exiting this process.")
+        return True
+    # UAC 被取消或启动失败：不退出程序，继续标准权限运行
+    print("[Elevate] Elevation not granted (%s); continuing unelevated."
+          % (err or "unknown"))
+    return False
+
+
+class HDDocApp(ttk.Window):
     def __init__(self):
-        super().__init__()
+        # 主题来自持久化偏好（见 HD_Doc_core 的 get_theme/set_theme）
+        super().__init__(themename=get_theme())
         self.withdraw()               # 构建期不显示，避免默认位置闪一下
         self.title(tr("gui.title", ver=VERSION))
         self.geometry("1140x820")
@@ -99,8 +126,9 @@ class HDDocApp(tk.Tk):
         self._last_thresh_calc = 0.0
         self._last_flush = 0.0
 
-        # 界面语言（切换后重启重载，见 _set_language / restart_app）
+        # 界面语言与主题（切换后重启重载，见 _set_language / _set_theme）
         self.var_lang = tk.StringVar(value=get_language())
+        self.var_theme = tk.StringVar(value=get_theme())
 
         self._setup_theme()
         self._set_window_icon()
@@ -112,70 +140,20 @@ class HDDocApp(tk.Tk):
 
     # ---------------------------------------------------------- 主题与图标
     def _setup_theme(self):
-        """clam 主题 + 品牌色定制（Windows 默认 vista 主题可编程性太弱）"""
-        style = ttk.Style(self)
+        """ttkbootstrap 主题定制（主题本身在 Window 构造时按 get_theme()
+        选定；切换主题会重启程序，这里只做一次性微调，颜色不写死）。
+
+        - set_global_family：全局字体走系统 UI 字体（Windows 即 Segoe UI，
+          非 Windows 自动回退），与 clam 时代的硬编码效果一致；
+        - Treeview 行高/表头内边距：主题默认偏挤，错误块表格需要呼吸感。
+        """
         try:
-            style.theme_use("clam")
-        except tk.TclError:
-            return
-        style.configure(".", font=("Segoe UI", 9), foreground=INK,
-                        background=CANVAS_BG)
-        style.configure("TFrame", background=CANVAS_BG)
-        # 卡片式分区
-        style.configure("TLabelframe", background=SURFACE, bordercolor=BORDER,
-                        borderwidth=1, relief="solid", labeloutside=False)
-        style.configure("TLabelframe.Label", font=("Segoe UI", 9, "bold"),
-                        foreground=INK, background=SURFACE)
-        style.configure("Card.TFrame", background=SURFACE)
-        # 文本
-        style.configure("TLabel", foreground=INK, background=SURFACE)
-        style.configure("Flat.TLabel", background=CANVAS_BG)
-        style.configure("Muted.TLabel", foreground=INK_MUTED,
-                        background=SURFACE)
-        style.configure("Banner.TLabel", foreground=INK, background=SURFACE,
-                        padding=(10, 6))
-        # 按钮
-        style.configure("TButton", padding=(10, 4), bordercolor=BORDER,
-                        foreground=INK, background="#F8FAFC")
-        style.map("TButton",
-                  background=[("active", "#EFF6FF"), ("pressed", "#E2E8F0")],
-                  bordercolor=[("active", ACCENT)])
-        style.configure("Accent.TButton", padding=(12, 5),
-                        background=ACCENT, foreground="#FFFFFF",
-                        bordercolor=ACCENT, focuscolor=ACCENT,
-                        font=("Segoe UI", 9, "bold"))
-        style.map("Accent.TButton",
-                  background=[("active", ACCENT_HOVER),
-                              ("pressed", ACCENT_PRESS)])
-        style.configure("Danger.TButton", foreground="#B91C1C")
-        # 输入控件
-        style.configure("TCombobox", padding=(4, 2), bordercolor=BORDER,
-                        fieldbackground=SURFACE, arrowcolor=INK_MUTED)
-        style.configure("TEntry", padding=(4, 2), bordercolor=BORDER,
-                        fieldbackground=SURFACE)
-        style.configure("TCheckbutton", foreground=INK, background=SURFACE,
-                        focuscolor=ACCENT)
-        # 页签
-        style.configure("TNotebook", background=CANVAS_BG, bordercolor=BORDER,
-                        tabmargins=(2, 2, 2, 0))
-        style.configure("TNotebook.Tab", padding=(14, 5),
-                        background="#E2E8F0", foreground=INK_MUTED,
-                        borderwidth=0)
-        style.map("TNotebook.Tab",
-                  background=[("selected", SURFACE)],
-                  foreground=[("selected", INK)],
-                  font=[("selected", ("Segoe UI", 9, "bold"))])
-        # 表格与进度条
-        style.configure("Treeview", rowheight=26, background=SURFACE,
-                        fieldbackground=SURFACE, foreground=INK,
-                        bordercolor=BORDER)
-        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"),
-                        background="#F1F5F9", foreground=INK,
-                        padding=(6, 4), relief="flat")
-        style.map("Treeview.Heading", background=[("active", "#E2E8F0")])
-        style.configure("Horizontal.TProgressbar", background=ACCENT,
-                        troughcolor="#E2E8F0", thickness=8,
-                        borderwidth=0)
+            ttk.set_global_family("Segoe UI")
+        except Exception:
+            pass
+        style = self.style
+        style.configure("Treeview", rowheight=26)
+        style.configure("Treeview.Heading", padding=(6, 4))
 
     def _set_window_icon(self):
         """标题栏图标（.ico）+ 任务栏/Alt-Tab 图标（.png）；缺失时静默跳过"""
@@ -229,6 +207,18 @@ class HDDocApp(tk.Tk):
     def _reg_heading(self, tree, column, key):
         tree.heading(column, text=tr(key))
 
+    def _ask_yes(self, title, message):
+        """主题化的是/否确认框（替代 tkinter.messagebox）。
+
+        按钮文案走 lang/*.json（gui.btn.yes / gui.btn.no），localize=False
+        关闭 ttkbootstrap 自带的按钮本地化，返回值与当前语言解耦，
+        中英文界面都能确定判断。用户关掉对话框时结果为 None → 视为否。
+        """
+        return Messagebox.yesno(
+            message, title, parent=self,
+            buttons=["%s:primary" % tr("gui.btn.yes"), tr("gui.btn.no")],
+            localize=False) == tr("gui.btn.yes")
+
     def _set_language(self, lang):
         """切换语言：持久化偏好后重启程序，以新语言重载界面。
         扫描中禁止切换（重启会遗留 fio 子进程），只给界面内提示。"""
@@ -240,9 +230,20 @@ class HDDocApp(tk.Tk):
         set_language(lang)      # 写入配置；重启后由 get_language 读回
         restart_app()           # 一般不返回（execv 替换当前进程）
 
+    def _set_theme(self, theme):
+        """切换主题（浅色/深色）：持久化偏好后重启程序，以新主题重建控件。
+        与语言切换同一机制：扫描中禁止（重启会遗留 fio 子进程）。"""
+        if theme == get_theme():
+            return
+        if self.worker and self.worker.is_alive():
+            self._banner("gui.msg.theme_busy", "warn")
+            return
+        set_theme(theme)        # 写入配置；重启后由 get_theme 读回
+        restart_app()
+
     # ---------------------------------------------------------- UI 构建
     def _build_ui(self):
-        pad = dict(padx=6, pady=3)
+        colors = self.style.colors   # 主题色板：浅/深两套，构建期取一次
 
         self._build_menubar()
 
@@ -250,7 +251,7 @@ class HDDocApp(tk.Tk):
         outer = self._reg(ttk.LabelFrame(self, padding=(10, 6, 10, 8)),
                           "gui.settings")
         outer.pack(fill="x", padx=8, pady=(8, 4))
-        bar = ttk.Frame(outer, style="Card.TFrame")
+        bar = ttk.Frame(outer)
         bar.pack(fill="x")
 
         self._reg(ttk.Label(bar), "gui.target").grid(row=0, column=0, sticky="w")
@@ -310,11 +311,12 @@ class HDDocApp(tk.Tk):
 
         btn_bar = ttk.Frame(bar)
         btn_bar.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        self.btn_start = self._reg(ttk.Button(btn_bar, style="Accent.TButton",
+        self.btn_start = self._reg(ttk.Button(btn_bar, bootstyle="primary",
                                               command=self._start_scan),
                                    "gui.start")
         self.btn_start.pack(side="left")
-        self.btn_stop = self._reg(ttk.Button(btn_bar, command=self._stop_scan,
+        self.btn_stop = self._reg(ttk.Button(btn_bar, bootstyle="danger outline",
+                                             command=self._stop_scan,
                                              state="disabled"),
                                   "gui.stop")
         self.btn_stop.pack(side="left", padx=6)
@@ -322,7 +324,7 @@ class HDDocApp(tk.Tk):
                                                state="disabled"),
                                     "gui.export")
         self.btn_export.pack(side="left")
-        self._reg(ttk.Label(btn_bar, style="Muted.TLabel"),
+        self._reg(ttk.Label(btn_bar, bootstyle="secondary"),
                   "gui.hint").pack(side="left", padx=12)
         self.lbl_admin = self._reg(ttk.Label(btn_bar), "gui.perm_checking")
         self.lbl_admin.pack(side="left", padx=(16, 0))
@@ -338,41 +340,40 @@ class HDDocApp(tk.Tk):
         map_frame = self._reg(ttk.LabelFrame(self, padding=(8, 6, 8, 6)),
                               "gui.map_title")
         map_frame.pack(fill="both", expand=True, padx=8, pady=4)
-        self.canvas_map = tk.Canvas(map_frame, bg=SURFACE, highlightthickness=0)
+        self.canvas_map = tk.Canvas(map_frame, bg=colors.bg, highlightthickness=0)
         self.canvas_map.pack(fill="both", expand=True, padx=4, pady=4)
         self.canvas_map.bind("<Motion>", self._on_canvas_motion)
         self.canvas_map.bind("<Leave>", lambda e: self.lbl_hover.config(text=""))
 
-        legend = ttk.Frame(map_frame, style="Card.TFrame")
+        legend = ttk.Frame(map_frame)
         legend.pack(fill="x", padx=4)
         self.lbl_hover = ttk.Label(legend, text="", anchor="w",
-                                   style="Muted.TLabel")
+                                   bootstyle="secondary")
         self.lbl_hover.pack(side="left", fill="x", expand=True)
         self._legend_labels = []
         for color, key in ((COLOR_OK, "ok"), (COLOR_SLOW, "slow"),
                            (COLOR_BAD, "bad"), (COLOR_ERROR, "error"),
                            (COLOR_PENDING, "pending")):
             tk.Frame(legend, bg=color, width=12, height=12,
-                     highlightbackground=BORDER, highlightthickness=1
+                     highlightbackground=colors.border, highlightthickness=1
                      ).pack(side="left", padx=(8, 2))
             lbl = ttk.Label(legend, text=status_text(key),
-                            style="Muted.TLabel")
+                            bootstyle="secondary")
             lbl.pack(side="left")
             self._legend_labels.append((lbl, key))
 
         # ---- 状态行 ----
         st = ttk.Frame(self)
         st.pack(fill="x", padx=8, pady=4)
-        self.progress = ttk.Progressbar(st, maximum=100)
+        self.progress = ttk.Progressbar(st, maximum=100, bootstyle="primary")
         self.progress.pack(fill="x", side="top", pady=(0, 6))
         # 结果横幅：替代此前的 messagebox，扫描结果/错误在界面内展示
-        self.lbl_banner = tk.Label(st, text="", anchor="w",
-                                   foreground="#185FA5",
-                                   bg=BANNER_BG["info"],
-                                   font=("Segoe UI", 9, "bold"),
-                                   padx=10, pady=6)
+        # （bootstyle 随级别动态切换：info/success/warning/danger）
+        self.lbl_banner = ttk.Label(st, text="", anchor="w", bootstyle="info",
+                                    font=("Segoe UI", 9, "bold"),
+                                    padding=(10, 6))
         self.lbl_banner.pack(fill="x", pady=(0, 6))
-        row = ttk.Frame(st, style="Card.TFrame", padding=(10, 6))
+        row = ttk.Frame(st, padding=(10, 6))
         row.pack(fill="x")
         self.lbl_progress = self._reg(ttk.Label(row, width=16), "gui.progress")
         self.lbl_progress.pack(side="left")
@@ -384,15 +385,15 @@ class HDDocApp(tk.Tk):
         self.lbl_eta.pack(side="left")
         self.lbl_errors = self._reg(ttk.Label(row, width=12), "gui.errors")
         self.lbl_errors.pack(side="left")
-        self.lbl_state = self._reg(ttk.Label(row, style="Muted.TLabel"),
+        self.lbl_state = self._reg(ttk.Label(row, bootstyle="secondary"),
                                    "gui.state_ready")
         self.lbl_state.pack(side="left", padx=10)
 
         # ---- 详情页 ----
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=False, padx=8, pady=(4, 8))
-        self.txt_log = ScrolledText(self.nb, height=9, font=("Consolas", 9),
-                                    wrap="word")
+        self.txt_log = ttk.ScrolledText(self.nb, height=9,
+                                        font=("Consolas", 9), wrap="word")
         self._reg_tab(self.nb, self.txt_log, "gui.tab_log")
         err_frame = ttk.Frame(self.nb)
         self._reg_tab(self.nb, err_frame, "gui.tab_errors")
@@ -407,12 +408,21 @@ class HDDocApp(tk.Tk):
         sb = ttk.Scrollbar(err_frame, command=self.tree_err.yview)
         sb.pack(side="right", fill="y")
         self.tree_err.configure(yscrollcommand=sb.set)
-        self.txt_summary = ScrolledText(self.nb, height=9, font=("Consolas", 9),
-                                        wrap="word")
+        self.txt_summary = ttk.ScrolledText(self.nb, height=9,
+                                            font=("Consolas", 9), wrap="word")
         self._reg_tab(self.nb, self.txt_summary, "gui.tab_summary")
 
+    def _menus_state(self, enabled):
+        """扫描期间禁用语言/主题菜单（切换=重启，不能中断扫描）"""
+        state = "normal" if enabled else "disabled"
+        for idx in (self._lang_cascade_idx, self._view_cascade_idx):
+            try:
+                self._menubar.entryconfig(idx, state=state)
+            except Exception:
+                pass
+
     def _lang_menu_state(self, enabled):
-        """扫描期间禁用语言菜单（切换语言=重启，不能中断扫描）"""
+        """兼容旧名：只切换语言菜单的可用状态（内部统一走 _menus_state）"""
         try:
             self._menubar.entryconfig(
                 self._lang_cascade_idx,
@@ -428,18 +438,32 @@ class HDDocApp(tk.Tk):
         lang_menu.add_radiobutton(label="中文", variable=self.var_lang,
                                   value="zh", command=lambda: self._set_language("zh"))
         menubar.add_cascade(label=tr("gui.menu.language"), menu=lang_menu)
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_radiobutton(label=tr("gui.menu.theme_light"),
+                                  variable=self.var_theme,
+                                  value="bootstrap-light",
+                                  command=lambda: self._set_theme("bootstrap-light"))
+        view_menu.add_radiobutton(label=tr("gui.menu.theme_dark"),
+                                  variable=self.var_theme,
+                                  value="bootstrap-dark",
+                                  command=lambda: self._set_theme("bootstrap-dark"))
+        menubar.add_cascade(label=tr("gui.menu.view"), menu=view_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label=tr("gui.menu.about"), command=self._show_about)
         menubar.add_cascade(label=tr("gui.menu.help"), menu=help_menu)
         self.config(menu=menubar)
         self._menubar = menubar
         self._lang_menu = lang_menu
+        self._view_menu = view_menu
         self._help_menu = help_menu
         self._lang_cascade_idx = 0    # Language 是第一个级联菜单
+        self._view_cascade_idx = 1    # View 是第二个级联菜单
 
     # ---------------------------------------------------------- 关于窗口
     def _show_about(self):
-        win = tk.Toplevel(self)
+        # ttkbootstrap.Toplevel 的第一个位置参数是 title 而非 master，
+        # 必须用关键字传 master；iconphoto='' 默认继承主窗口图标
+        win = ttk.Toplevel(master=self)
         win.title(tr("gui.about.title"))
         win.transient(self)
         win.resizable(False, False)
@@ -447,19 +471,19 @@ class HDDocApp(tk.Tk):
             win.iconbitmap(os.path.join(_resource_dir(), "HD_Doc.ico"))
         except Exception:
             pass
-        frm = ttk.Frame(win, padding=24, style="Card.TFrame")
+        frm = ttk.Frame(win, padding=24)
         frm.pack(fill="both", expand=True)
-        head = ttk.Frame(frm, style="Card.TFrame")
+        head = ttk.Frame(frm)
         head.pack(fill="x")
         if self._icon_img is not None:
             ttk.Label(head, image=self._icon_img).pack(side="left",
                                                        padx=(0, 10))
         ttk.Label(head, text=tr("gui.title", ver=VERSION),
                   font=("Segoe UI", 12, "bold")).pack(side="left")
-        tk.Label(frm, text=tr("gui.about.body"), wraplength=420,
-                 justify="center", pady=12).pack()
+        ttk.Label(frm, text=tr("gui.about.body"), wraplength=420,
+                  justify="center", padding=(0, 12)).pack()
         ttk.Button(frm, text="OK", command=win.destroy,
-                   style="Accent.TButton").pack(pady=(8, 0))
+                   bootstyle="primary").pack(pady=(8, 0))
         # 模态 + 居中于父窗口
         win.grab_set()
         self.update_idletasks()
@@ -512,16 +536,16 @@ class HDDocApp(tk.Tk):
 
     # ---------------------------------------------------------- 横幅/日志
     def _banner(self, key, level="info", **kw):
-        """界面内结果横幅（替代弹窗）"""
+        """界面内结果横幅（替代弹窗）；级别 → ttkbootstrap bootstyle"""
         self.lbl_banner.config(text=tr(key, **kw),
-                               foreground=BANNER_COLORS.get(level, "#185FA5"),
-                               bg=BANNER_BG.get(level, BANNER_BG["info"]))
+                               bootstyle=BANNER_BOOTSTYLE.get(level, "info"))
 
     def _log(self, stream, key, **kw):
         """写入一条日志（插入时定型；切换语言会重启重载）"""
         self._log_line(stream, tr(key, **kw))
 
     def _log_line(self, stream, line):
+        # ScrolledText 的文本方法委托给内部 Text（见 ttkbootstrap 文档）
         self.txt_log.insert("end", "[%s] %s\n" % (stream, line))
         if int(self.txt_log.index("end-1c").split(".")[0]) > 600:
             self.txt_log.delete("1.0", "200.0")
@@ -532,11 +556,11 @@ class HDDocApp(tk.Tk):
     def _update_admin_ui(self):
         if is_admin():
             self.lbl_admin.config(text=tr("gui.perm_admin"),
-                                  foreground="#1E7B34")
+                                  bootstyle="success")
             self.btn_elevate.pack_forget()
         else:
             self.lbl_admin.config(text=tr("gui.perm_standard"),
-                                  foreground="#B36A00")
+                                  bootstyle="warning")
             self.btn_elevate.pack(side="left", padx=6)
 
     def _startup_admin_check(self):
@@ -546,12 +570,10 @@ class HDDocApp(tk.Tk):
             self._log("info", "gui.log.admin_ok")
             return
         self._log("warn", "gui.log.not_admin")
-        if not IS_WIN or not auto_elevate_enabled():
-            return
-        if messagebox.askyesno(
-                tr("gui.msg.admin_needed_title"),
-                tr("gui.msg.admin_needed", t="\\\\.\\PhysicalDriveN")):
-            self._relaunch_elevated()
+        # 提权已在启动时由入口 ensure_admin_at_startup 处理（UAC 在窗口
+        # 出现前弹出）。能运行到这里只有两种情况：用户在 UAC 选了"否"，
+        # 或用 --no-elevate / HDTUNE_NO_AUTO_ELEVATE=1 关闭了自动提权。
+        # 两者都保持标准权限继续运行，需要时点界面上的"以管理员重启"。
 
     def _relaunch_elevated(self):
         # gui=True：提权子进程用 pythonw.exe 启动，不再伴随命令窗口
@@ -596,10 +618,15 @@ class HDDocApp(tk.Tk):
             self._log("warn", "gui.msg.no_target")
             return
         if is_physical_target(target) and not is_admin():
-            if messagebox.askyesno(
-                    tr("gui.msg.admin_needed_title"),
-                    tr("gui.msg.admin_needed", t=target)):
+            if auto_elevate_enabled():
+                # 与启动提权一致：直接弹 UAC，不再先问"是否重启"
+                # （UAC 本身就是确认；取消则 _relaunch_elevated 出横幅）
                 self._relaunch_elevated()
+            else:
+                # 明确关闭了自动提权（--no-elevate）：只提示不弹窗，
+                # 由用户点"以管理员重启"或去掉该参数重试
+                self._banner("gui.msg.admin_needed", "warn", t=target)
+                self._log("warn", "gui.msg.admin_needed", t=target)
             return
         fio = resolve_fio(self.var_fio.get().strip())
         if not os.path.isfile(fio):
@@ -685,7 +712,7 @@ class HDDocApp(tk.Tk):
         self.txt_summary.delete("1.0", "end")
         self.summary = None
         self.btn_export.config(state="disabled")
-        self.lbl_banner.config(text="", bg=BANNER_BG["info"])
+        self.lbl_banner.config(text="", bootstyle="info")
         self.scan_start_ts = time.time()
         self.scan_bs = bs
         self.scan_quick = quick
@@ -713,9 +740,9 @@ class HDDocApp(tk.Tk):
         self.worker.start()
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
-        self._lang_menu_state(False)
+        self._menus_state(False)
         self.lbl_state.config(text=tr("gui.state_scanning"),
-                              foreground="#185FA5")
+                              bootstyle="info")
         self._log("info", "gui.log.start_scan",
                   t=target, bs=fmt_bytes(bs), n=len(segments),
                   kind=tr("gui.log.kind_region") if quick
@@ -744,13 +771,13 @@ class HDDocApp(tk.Tk):
         if self.scanner:
             self.scanner.stop()
             self.lbl_state.config(text=tr("gui.state_stopping"),
-                                  foreground="#A32D2D")
+                                  bootstyle="warning")
             self._log("warn", "gui.log.stop_requested")
 
     def _on_close(self):
         if self.scanner and self.worker and self.worker.is_alive():
-            if not messagebox.askyesno(tr("gui.msg.exit_title"),
-                                       tr("gui.msg.exit_scanning")):
+            if not self._ask_yes(tr("gui.msg.exit_title"),
+                                 tr("gui.msg.exit_scanning")):
                 return
             self.scanner.stop()
         self._cancel_timers()
@@ -897,11 +924,11 @@ class HDDocApp(tk.Tk):
         elif et == "worker_done":
             self.btn_start.config(state="normal")
             self.btn_stop.config(state="disabled")
-            self._lang_menu_state(True)
+            self._menus_state(True)
             self.worker = None
             if self.scan_start_ts and not self.summary:
                 self.lbl_state.config(text=tr("gui.state_stopped"),
-                                      foreground="#666")
+                                      bootstyle="secondary")
 
     def _log_raw(self, stream, line):
         """fio 原始输出（英文技术文本，不过 i18n）"""
@@ -940,10 +967,10 @@ class HDDocApp(tk.Tk):
             code = int(ev["errors"])
             self.lbl_errors.config(
                 text=tr("gui.errors_code", name=errno_name(code), code=code),
-                foreground="#A32D2D")
+                bootstyle="danger")
         elif ev.get("errors") == 0:
             self.lbl_errors.config(text=tr("gui.errors_none"),
-                                   foreground="#3B6D11")
+                                   bootstyle="success")
 
     def _on_finished(self, s):
         self.summary = s
@@ -972,13 +999,13 @@ class HDDocApp(tk.Tk):
                 text=tr("gui.errors_code",
                         name=s["last_errno_name"] or tr("unknown"),
                         code=s["last_errno"]),
-                foreground="#A32D2D")
+                bootstyle="danger")
         else:
             self.lbl_errors.config(text=tr("gui.errors_none"),
-                                   foreground="#3B6D11")
+                                   bootstyle="success")
         self.lbl_state.config(
             text=tr("gui.state_done_aborted") if s["aborted"]
-            else tr("gui.state_done"), foreground="#3B6D11")
+            else tr("gui.state_done"), bootstyle="success")
         self.btn_export.config(state="normal")
 
         self._render_error_tree()
@@ -1003,7 +1030,7 @@ class HDDocApp(tk.Tk):
 
     def _on_failed(self, msg):
         self.lbl_state.config(text=tr("gui.state_failed"),
-                              foreground="#A32D2D")
+                              bootstyle="danger")
         self._log_raw("error", msg)
         self._banner("gui.banner.failed", "error", msg=msg)
 
