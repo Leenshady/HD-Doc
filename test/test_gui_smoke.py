@@ -308,6 +308,22 @@ assert max(app._about_icon.width(), app._about_icon.height()) <= H.ABOUT_ICON_PX
         H.ABOUT_ICON_PX, app._about_icon.width(), app._about_icon.height())
 print("About window OK (one-line intro, no author line, icon %dx%d <= %dpx)"
       % (app._about_icon.width(), app._about_icon.height(), H.ABOUT_ICON_PX))
+# 弹窗按钮必须 i18n（本测试固定英文 → "OK"）；弹窗必须真正获焦：
+# 模态 grab 落在弹窗上、键盘焦点落在"确定"按钮（回车即关）、Escape 也能关
+about_btns = [w for w in _descendants(about_win[0])
+              if w.winfo_class() == "TButton"]
+assert about_btns, "About dialog should have an OK button"
+assert about_btns[0].cget("text") == tr("gui.about.ok"), \
+    "OK button must be localized: %r" % (about_btns[0].cget("text"),)
+assert about_win[0].grab_current() is about_win[0], \
+    "About dialog must take the modal grab"
+assert app.focus_get() is about_btns[0], \
+    "About dialog must focus its OK button: focus=%r" % (app.focus_get(),)
+about_win[0].event_generate("<Escape>")
+app.update()
+assert not [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"], \
+    "Escape must close the About dialog"
+print("About focus/i18n OK (grab on dialog, focus on OK button, Escape closes)")
 
 # ---- 目标下拉框：只显示 型号+容量，路径走 _target_paths 映射 ----
 app._refresh_drives()

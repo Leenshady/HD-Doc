@@ -651,14 +651,36 @@ class HDDocApp(ttk.Window):
                   font=("Segoe UI", 12, "bold")).pack(side="left")
         ttk.Label(frm, text=tr("gui.about.body"), wraplength=420,
                   justify="center", padding=(0, 12)).pack()
-        ttk.Button(frm, text="OK", command=win.destroy,
-                   bootstyle="primary").pack(pady=(8, 0))
+        btn = ttk.Button(frm, text=tr("gui.about.ok"),
+                         command=lambda: self._close_about(win),
+                         bootstyle="primary")
+        btn.pack(pady=(8, 0))
+        win.bind("<Escape>", lambda e: self._close_about(win))
+        win.protocol("WM_DELETE_WINDOW", lambda: self._close_about(win))
         # 模态 + 居中于父窗口
         win.grab_set()
         self.update_idletasks()
         x = self.winfo_x() + (self.winfo_width() - win.winfo_reqwidth()) // 2
         y = self.winfo_y() + (self.winfo_height() - win.winfo_reqheight()) // 2
         win.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        # grab_set 只拦截输入，不保证窗口置前/获焦（Windows 上弹窗常留在
+        # 父窗口后面）：先 lift + 强抢窗口焦点使其激活，再把键盘焦点交给
+        # "确定"按钮（聚焦后回车/空格即关闭）。取焦失败不影响功能，静默继续。
+        win.lift()
+        try:
+            win.focus_force()
+            btn.focus_set()
+        except Exception:
+            pass
+
+    def _close_about(self, win):
+        """关闭关于窗口并把焦点/置前状态还给主窗口（模态对话框的基本礼仪）"""
+        win.destroy()
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
 
     # ---------------------------------------------------------- 交互
     def _refresh_drives(self):
