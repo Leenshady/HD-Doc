@@ -53,9 +53,25 @@ Without it, no files are written. `--help` lists all options.
 
 ## Language files
 
-Interface strings live in `lang/en.json` and `lang/zh.json`, loaded at
-runtime. To add a language, drop a `lang/<code>.json` with the same keys
-and register the code in `LANGUAGES` in `HD_Doc_core.py`.
+Interface strings live in `lang/<code>.json` — one file per language,
+auto-discovered at startup. There is no language list in code. Each
+file names itself with a reserved `_meta` block:
+
+```json
+{
+  "_meta": { "name": "中文", "name_en": "Chinese (Simplified)" },
+  "status.ok": "正常",
+  "...": "..."
+}
+```
+
+The file name (minus `.json`) is the language code; `_meta.name` is the
+language's own name, used as the label in the *Language* menu. To add a
+language: copy `lang/en.json`, translate the values, set `_meta.name`,
+save as `lang/<code>.json` — the menu, the config validation and the
+English fallback all follow automatically, no code change. Files whose
+name starts with `_` or `.` are treated as templates and skipped;
+missing keys fall back to English.
 
 ## Build the Windows executable
 

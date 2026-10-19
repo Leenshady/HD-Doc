@@ -6,7 +6,8 @@ HD_Doc_gui.py —— GUI 模式（ttkbootstrap；只依赖 HD_Doc_core）
 本模块只在 GUI 模式下被入口 HD_Doc.py 导入；
 没有 ttkbootstrap 的环境（如 --cli 命令行模式）永远不会加载本模块。
 
-界面语言：默认英文，菜单 Language/语言 可切换中文，选择持久化在
+界面语言：默认英文，菜单 Language/语言 可切换到任何已安装语言
+（菜单由 lang/*.json 自动发现生成，新增语言零代码改动），选择持久化在
 用户配置目录（见 HD_Doc_core 的 i18n 小节；文案表在 lang/*.json，
 独立于代码）。切换语言即保存偏好并原地重建界面（_rebuild_ui：
 销毁全部控件后按新语言重建，扫描线程/结果/日志都不受影响），
@@ -578,10 +579,13 @@ class HDDocApp(ttk.Window):
     def _build_menubar(self):
         menubar = tk.Menu(self)
         lang_menu = tk.Menu(menubar, tearoff=0)
-        lang_menu.add_radiobutton(label="English", variable=self.var_lang,
-                                  value="en", command=lambda: self._set_language("en"))
-        lang_menu.add_radiobutton(label="中文", variable=self.var_lang,
-                                  value="zh", command=lambda: self._set_language("zh"))
+        # 语言菜单由 lang/*.json 自动发现生成（core.available_languages：
+        # 文件名即语言码、_meta.name 即菜单标签）。新增语言只需往 lang/
+        # 放一个 JSON，不用改这里；切换后 _rebuild_ui 会用新表重建菜单。
+        for code, name in available_languages():
+            lang_menu.add_radiobutton(
+                label=name, variable=self.var_lang, value=code,
+                command=lambda c=code: self._set_language(c))
         menubar.add_cascade(label=tr("gui.menu.language"), menu=lang_menu)
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_radiobutton(label=tr("gui.menu.theme_light"),

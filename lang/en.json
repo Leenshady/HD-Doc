@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "name": "English",
+    "name_en": "English",
+    "note": "HD Doc interface strings. Keys are read by core.tr(); a missing key falls back to en.json. To add a language: copy this file, translate the values, set _meta.name to the language's own name, and save as lang/<code>.json (the file name is the language code) - no code change needed. The _meta block itself is documentation only and is never shown in the UI."
+  },
   "status.ok": "OK",
   "status.slow": "Slow",
   "status.bad": "Very slow",

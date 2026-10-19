@@ -64,17 +64,22 @@ IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C
 IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400
 
 # ---------------------------------------------------------------- i18n 多语言
-# GUI 界面语言：默认英文，可切换中文；CLI 固定英文（cli_main 入口
-# set_language("en")）。语言选择持久化在用户配置目录：
+# GUI 界面语言：默认英文，可切换任何已安装语言；CLI 固定英文
+# （cli_main 入口 set_language("en")）。语言选择持久化在用户配置目录：
 #   Windows: %APPDATA%\HD_Doc\config.json
 #   其他:    ~/.config/HD_Doc/config.json
-# 文案表独立于代码，放在本目录旁的 lang/（en.json / zh.json），运行时
-# 加载；新增语言只需加一个 JSON 并把码加进 LANGUAGES。
-# 环境变量 HDTUNE_LANG=en|zh 可临时覆盖（测试用，不落盘）。
-LANGUAGES = ("en", "zh")
+# 文案表独立于代码：lang/ 下 <code>.json 一个语言一个文件，启动时扫描
+# 自动发现（无硬编码语言清单）。每个文件用保留键 "_meta" 自我描述：
+#     "_meta": {"name": "简体中文", "name_en": "Chinese (Simplified)"}
+# name 是该语言的自称（语言菜单显示用），文件名（去 .json）即语言码。
+# 新增语言 = 复制 en.json 翻译后存为 lang/<code>.json，零代码改动；
+# 菜单、LANGUAGES、set_language 校验全部由文件推导。
+# 环境变量 HDTUNE_LANG=<code> 可临时覆盖（测试用，不落盘）。
 DEFAULT_LANGUAGE = "en"
 _LANGUAGE = DEFAULT_LANGUAGE
 _LANG_LOADED = False
+_LANG_META_KEY = "_meta"       # 语言文件自描述保留键（不进文案表）
+_LANG_NAMES = {}               # code → 自称（语言菜单标签）
 
 def _lang_dir():
     """语言文件目录：源码树里与模块同级；PyInstaller 打包后位于
@@ -85,36 +90,80 @@ def _lang_dir():
 
 
 def _load_languages():
-    """加载 lang/<code>.json 文案表（如 lang/en.json、lang/zh.json）。
+    """扫描 lang/*.json，自动发现全部可用语言；返回 (文案表, 自称表)。
 
-    新增语言只需放入对应 JSON 并把码加进 LANGUAGES，无需改代码。
-    文件缺失/损坏时该语言退化为空表，tr() 会逐键回退英文。
+    规则（新增语言零代码改动的关键）：
+      - 文件名去 .json 即语言码（en.json → "en"）
+      - 保留键 "_meta" 描述语言自身，存入文案表前剔除：
+        name=该语言自称（菜单标签，缺失退化为码）、name_en=英文名（可选）
+      - "_" 或 "." 开头的文件视为模板/草稿/备份，跳过
+      - 解析失败或不是 JSON 对象 → 告警并跳过（不影响其他语言）
+    非英文表缺键时向 stderr 汇总告警（不阻断启动，tr() 逐键回退英文）。
     """
-    tables = {}
-    for lang in LANGUAGES:
-        path = os.path.join(_lang_dir(), "%s.json" % lang)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            tables[lang] = data if isinstance(data, dict) else {}
-        except Exception:
-            tables[lang] = {}
-    if not tables.get("en"):
-        sys.stderr.write("warning: no language file in %s; "
-                         "strings fall back to raw keys\n" % _lang_dir())
-    en_keys = set(tables.get("en", {}))
-    for lang in LANGUAGES:
-        if lang == "en":
+    lang_dir = _lang_dir()
+    tables, names = {}, {}
+    try:
+        entries = sorted(os.listdir(lang_dir))
+    except OSError as e:
+        sys.stderr.write("warning: cannot list %s (%s)\n" % (lang_dir, e))
+        entries = []
+    for fn in entries:
+        if not fn.endswith(".json") or fn.startswith((".", "_")):
             continue
-        missing = en_keys - set(tables.get(lang, {}))
+        code = fn[:-len(".json")]
+        try:
+            with open(os.path.join(lang_dir, fn), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            sys.stderr.write("warning: cannot load lang/%s (%s); skipped\n"
+                             % (fn, e))
+            continue
+        if not isinstance(data, dict):
+            sys.stderr.write("warning: lang/%s is not a JSON object; skipped\n"
+                             % fn)
+            continue
+        meta = data.get(_LANG_META_KEY)
+        if isinstance(meta, dict):
+            data.pop(_LANG_META_KEY)
+            names[code] = str(meta.get("name") or code)
+        else:
+            names[code] = code
+        tables[code] = data
+    if not tables.get(DEFAULT_LANGUAGE):
+        sys.stderr.write("warning: no %s.json in %s; "
+                         "strings fall back to raw keys\n"
+                         % (DEFAULT_LANGUAGE, lang_dir))
+    en_keys = set(tables.get(DEFAULT_LANGUAGE, {}))
+    for lang in sorted(tables):
+        if lang == DEFAULT_LANGUAGE:
+            continue
+        missing = en_keys - set(tables[lang])
         if missing:
             sys.stderr.write("warning: lang/%s.json missing %d key(s): %s\n"
                              % (lang, len(missing),
                                 ", ".join(sorted(missing)[:8])))
-    return tables
+    return tables, names
 
 
-_I18N = _load_languages()
+_I18N, _LANG_NAMES = _load_languages()
+
+
+def _lang_codes():
+    """全部可用语言码：默认语言优先，其余按码序（确定性顺序）"""
+    codes = [c for c in _I18N if c]
+    head = [DEFAULT_LANGUAGE] if DEFAULT_LANGUAGE in codes else []
+    return tuple(head + sorted(c for c in codes
+                               if c != DEFAULT_LANGUAGE))
+
+
+def available_languages():
+    """全部可用语言 [(code, 自称), ...]——GUI 语言菜单据此动态生成：
+    新增语言（放一个 lang/<code>.json）即出现在菜单里，无需改代码"""
+    return [(c, _LANG_NAMES.get(c, c)) for c in _lang_codes()]
+
+
+# 兼容旧引用的语言码清单（由 lang/*.json 推导，见 available_languages）
+LANGUAGES = _lang_codes()
 
 
 def _config_dir():
@@ -153,7 +202,7 @@ def save_config(cfg):
 
 
 def get_language():
-    """当前界面语言代码（"en" / "zh"）。
+    """当前界面语言代码（"en" / "zh" / ……任何 lang/*.json 发现的码）。
 
     HDTUNE_LANG 环境变量仅在首次加载时生效（测试/调试用的一次性覆盖），
     之后以 set_language 的进程内切换为准（GUI 语言菜单即走该路径）。
@@ -161,21 +210,21 @@ def get_language():
     global _LANGUAGE, _LANG_LOADED
     if not _LANG_LOADED:
         env = os.environ.get("HDTUNE_LANG", "").strip().lower()
-        if env in LANGUAGES:
+        if env in _I18N:
             _LANGUAGE = env
         else:
             lang = str(load_config().get("language",
                                          DEFAULT_LANGUAGE)).strip().lower()
-            _LANGUAGE = lang if lang in LANGUAGES else DEFAULT_LANGUAGE
+            _LANGUAGE = lang if lang in _I18N else DEFAULT_LANGUAGE
         _LANG_LOADED = True
     return _LANGUAGE
 
 
 def set_language(lang):
-    """切换界面语言并持久化；非法语言码返回 False"""
+    """切换界面语言并持久化；非法（未安装）语言码返回 False"""
     global _LANGUAGE, _LANG_LOADED
     lang = str(lang).strip().lower()
-    if lang not in LANGUAGES:
+    if lang not in _I18N:
         return False
     _LANGUAGE = lang
     _LANG_LOADED = True

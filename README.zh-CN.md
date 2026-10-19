@@ -46,9 +46,22 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 
 ## 语言文件
 
-界面文案独立于代码，放在 `lang/en.json` 与 `lang/zh.json`，运行时加载。
-新增语言：放入同键集的 `lang/<代码>.json`，并在 `HD_Doc_core.py` 的
-`LANGUAGES` 里注册即可。
+界面文案放在 `lang/<代码>.json`，一个语言一个文件，启动时自动扫描发现——
+代码里没有任何语言清单。每个文件用保留键 `_meta` 自我描述：
+
+```json
+{
+  "_meta": { "name": "中文", "name_en": "Chinese (Simplified)" },
+  "status.ok": "正常",
+  "...": "..."
+}
+```
+
+文件名（去 `.json`）即语言码；`_meta.name` 是该语言的自称，作为
+*Language/语言* 菜单里的标签。新增语言：复制 `lang/en.json` 翻译各值，
+填好 `_meta.name`，另存为 `lang/<代码>.json` 即可——菜单、配置校验、
+英文回退全部自动生效，不用改任何代码。`_` 或 `.` 开头的文件视为模板
+会跳过；缺失的键回退英文。
 
 ## 打包 Windows 可执行文件
 

@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "name": "中文",
+    "name_en": "Chinese (Simplified)",
+    "note": "HD Doc 界面文案。键由 core.tr() 读取，缺失的键回退到 en.json。新增语言：复制本文件翻译各值，把 _meta.name 改成该语言的自称，另存为 lang/<code>.json（文件名即语言码），无需改任何代码。_meta 块仅作说明，不会显示在界面上。"
+  },
   "status.ok": "正常",
   "status.slow": "偏慢",
   "status.bad": "很慢",

@@ -289,11 +289,16 @@ check("tr 占位符含 % 不乱码", "%.2f" in H.tr("rep.mode_quick", n=1, cov="
 check("缺失键回退键名", H.tr("no.such.key"), "no.such.key")
 check("两种语言键集合一致（lang/*.json）",
       set(_en_file) == set(_zh_file), True)
-check("运行时表与 en.json 一致", set(H._I18N["en"]) == set(_en_file), True)
-check("运行时表与 zh.json 一致", set(H._I18N["zh"]) == set(_zh_file), True)
+check("运行时表与 en.json 一致（_meta 已剔除）",
+      set(H._I18N["en"]) == set(_en_file) - {"_meta"}, True)
+check("运行时表与 zh.json 一致（_meta 已剔除）",
+      set(H._I18N["zh"]) == set(_zh_file) - {"_meta"}, True)
 check("语言目录为 lang/", os.path.basename(H._lang_dir()), "lang")
-check("LANGUAGES 仅 en/zh", H.LANGUAGES, ("en", "zh"))
-check("set_language 拒绝非法码", H.set_language("fr"), False)
+check("LANGUAGES 由 lang/*.json 推导（默认语言优先）",
+      H.LANGUAGES, ("en", "zh"))
+check("available_languages 给出菜单用的自称",
+      dict(H.available_languages()), {"en": "English", "zh": "中文"})
+check("set_language 拒绝未安装码", H.set_language("fr"), False)
 check("set_language 接受 zh", H.set_language("zh"), True)
 check("切换后 get_language=zh", H.get_language(), "zh")
 check("tr 中文", H.tr("rep.target", t="X"), "目标: X")
@@ -302,6 +307,55 @@ check("errno_name 中文", H.errno_name(22),
 check("bus_type_name 中文", H.bus_type_name(16), "存储空间")
 check("恢复英文", H.set_language("en"), True)
 check("恢复后 get_language=en", H.get_language(), "en")
+
+# ---------- 语言自动发现：放个 JSON 即新语言，零代码改动 ----------
+import shutil as _shutil
+import tempfile as _tempfile
+
+_tmp = _tempfile.mkdtemp(prefix="HD_Doc_lang_")
+try:
+    _shutil.copy(os.path.join(_langdir, "en.json"),
+                 os.path.join(_tmp, "en.json"))
+    # 新语言：自带 _meta 自称 + 一条翻译，其余键缺失（应回退英文）
+    with open(os.path.join(_tmp, "ja.json"), "w", encoding="utf-8") as _f:
+        _json.dump({"_meta": {"name": "日本語"},
+                    "rep.target": "目標: {t}"}, _f)
+    # 无 _meta 的文件：自称退化为语言码
+    with open(os.path.join(_tmp, "de.json"), "w", encoding="utf-8") as _f:
+        _json.dump({"rep.target": "Ziel: {t}"}, _f)
+    # 下划线开头 = 模板/草稿，不应被发现
+    with open(os.path.join(_tmp, "_template.json"), "w", encoding="utf-8") as _f:
+        _json.dump({"_meta": {"name": "x"}}, _f)
+    # 损坏文件：告警跳过，不影响其他语言
+    with open(os.path.join(_tmp, "broken.json"), "w", encoding="utf-8") as _f:
+        _f.write("{ not json")
+    _orig_dir, _orig_i18n, _orig_names = (H._lang_dir, H._I18N, H._LANG_NAMES)
+    H._lang_dir = lambda: _tmp
+    try:
+        _tables, _names = H._load_languages()
+        check("自动发现新语言 ja/de（未改任何代码）",
+              {"ja", "de"} <= set(_tables), True)
+        check("模板文件 _template.json 被跳过", "_template" in _tables, False)
+        check("损坏文件被跳过", "broken" in _tables, False)
+        check("_meta 不进文案表", "_meta" in _tables.get("ja", {}), False)
+        check("自称取自 _meta.name", _names.get("ja"), "日本語")
+        check("缺失 _meta 时自称退化为码", _names.get("de"), "de")
+        # 换上临时注册表：菜单/校验/翻译全部跟着变
+        H._I18N, H._LANG_NAMES = _tables, _names
+        check("available_languages 动态含新语言",
+              dict(H.available_languages()).get("ja"), "日本語")
+        check("set_language 接受新语言", H.set_language("ja"), True)
+        check("tr 用新语言译文", H.tr("rep.target", t="X"), "目標: X")
+        check("新语言缺键回退英文", H.tr("rep.mode_full"),
+              H.tr("rep.mode_full", _lang="en"))
+        check("菜单顺序：默认优先其余按码序",
+              [c for c, _ in H.available_languages()], ["en", "de", "ja"])
+    finally:
+        H._lang_dir, H._I18N, H._LANG_NAMES = (_orig_dir, _orig_i18n,
+                                               _orig_names)
+        H.set_language("en")   # 还原进程内语言
+finally:
+    _shutil.rmtree(_tmp, ignore_errors=True)
 # 英文分段值解析（GUI 英文下拉）
 check("parse_segment_size 英文整盘", H.parse_segment_size("Whole disk at once (fastest)"), None)
 check("parse_segment_size 中文整盘", H.parse_segment_size("整盘一次（最快）"), None)
