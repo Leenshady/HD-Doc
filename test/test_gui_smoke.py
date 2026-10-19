@@ -273,7 +273,7 @@ assert app.style.theme_use() == "bootstrap-light"
 assert str(app.canvas_map.cget("bg")).lower() == app.style.colors.bg.lower()
 print("Theme switch OK (live theme_use; native widgets follow)")
 
-# ---- 关于窗口（一行简介，无作者行） ----
+# ---- 关于窗口（一行简介，无作者行，图标限制大小） ----
 app._show_about()
 app.update()
 about_win = [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"]
@@ -285,7 +285,29 @@ about_txt = about_labels[0].cget("text")
 assert "HD Doc" in about_txt, about_txt
 assert "Author" not in about_txt and "作者" not in about_txt, about_txt
 assert "\n" not in about_txt, "About must be a single line: %r" % about_txt
-print("About window OK (one-line intro, no author line)")
+# 弹窗内图标必须被 _bounded_photo 限制大小（原图 1248px 会撑爆对话框）
+def _descendants(w):
+    for c in w.winfo_children():
+        yield c
+        yield from _descendants(c)
+about_imgs = []
+for w in _descendants(about_win[0]):
+    if w.winfo_class() not in ("Label", "TLabel"):
+        continue
+    v = w.cget("image")          # 带图的标签返回 ('pyimageN',)，无图返回 ''
+    if isinstance(v, (tuple, list)):
+        v = v[0] if v else ""
+    if v:
+        about_imgs.append(v)
+assert about_imgs, "About dialog should show the app icon"
+assert about_imgs[0] == str(app._about_icon), \
+    "about dialog must show the bounded icon copy, not the full-size one: %r" % (
+        about_imgs,)
+assert max(app._about_icon.width(), app._about_icon.height()) <= H.ABOUT_ICON_PX, \
+    "about icon must be bounded to %dpx: got %dx%d" % (
+        H.ABOUT_ICON_PX, app._about_icon.width(), app._about_icon.height())
+print("About window OK (one-line intro, no author line, icon %dx%d <= %dpx)"
+      % (app._about_icon.width(), app._about_icon.height(), H.ABOUT_ICON_PX))
 
 # ---- 目标下拉框：只显示 型号+容量，路径走 _target_paths 映射 ----
 app._refresh_drives()

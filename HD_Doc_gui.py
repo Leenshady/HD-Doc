@@ -65,6 +65,22 @@ def _resource_dir():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "img")
 
 
+# 弹窗内图标上限（原图可能是 1248px 的大图，直接放会把对话框撑爆）
+ABOUT_ICON_PX = 48
+
+
+def _bounded_photo(img, max_px=ABOUT_ICON_PX):
+    """PhotoImage 等比缩到 max_px 以内。
+
+    PhotoImage 只有 subsample（整数倍点采样）可用、且运行时无 PIL 依赖，
+    这里向下取整到整数倍；原图任一边已不超上限时原样返回（避免多余拷贝）。
+    """
+    factor = max(1, max(img.width(), img.height()) // max_px)
+    if factor == 1:
+        return img
+    return img.subsample(factor, factor)
+
+
 def ensure_admin_at_startup():
     """GUI 启动即申请管理员权限（入口 HD_Doc.py 在创建窗口前调用）。
 
@@ -102,6 +118,7 @@ class HDDocApp(ttk.Window):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._target_paths = {}       # 下拉标签 → 裸设备路径（型号显示用）
         self._icon_img = None         # PhotoImage 引用，防止被 GC
+        self._about_icon = None       # 弹窗内小图标（_bounded_photo 缩放版）
 
         self.q = queue.Queue()
         self.scanner = None
@@ -180,6 +197,11 @@ class HDDocApp(ttk.Window):
             img = tk.PhotoImage(master=self, file=os.path.join(d, "HD_Doc.png"))
             self.iconphoto(False, img)
             self._icon_img = img      # 持有引用，防止被垃圾回收
+            # 弹窗里另存一份缩放版：原图 1248px，直接显示会撑爆对话框
+            try:
+                self._about_icon = _bounded_photo(img)
+            except Exception:
+                self._about_icon = img
         except Exception:
             pass
 
@@ -622,9 +644,9 @@ class HDDocApp(ttk.Window):
         frm.pack(fill="both", expand=True)
         head = ttk.Frame(frm)
         head.pack(fill="x")
-        if self._icon_img is not None:
-            ttk.Label(head, image=self._icon_img).pack(side="left",
-                                                       padx=(0, 10))
+        if self._about_icon is not None:
+            ttk.Label(head, image=self._about_icon).pack(side="left",
+                                                        padx=(0, 10))
         ttk.Label(head, text=tr("gui.title", ver=VERSION),
                   font=("Segoe UI", 12, "bold")).pack(side="left")
         ttk.Label(frm, text=tr("gui.about.body"), wraplength=420,
