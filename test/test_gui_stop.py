@@ -88,6 +88,21 @@ check("A aborted=True", s["aborted"], True)
 check("A stop_requested=True", s.get("stop_requested"), True)
 check("A 无错误块", len(s["error_blocks"]), 0)
 check("A errno_segments=0", s["errno_segments"], 0)
+# 停止时正在扫的段：lat 是截断样本（SSD 短段启动瞬态放大中位数），
+# 必须整段放弃——不进统计、不发 seg_stat、热力图该格保持未扫描
+segs = s["segments"]
+stopped_segs = [i for i, sg in enumerate(segs) if sg.get("stopped")]
+check("A 至少一段被标记 stopped", len(stopped_segs) >= 1, True)
+for i in stopped_segs:
+    check("A 段%d 延迟统计已丢弃" % (i + 1), segs[i]["median_us"], None)
+    check("A 段%d 最大延迟已丢弃" % (i + 1), segs[i]["max_us"], None)
+    check("A 段%d 格子保持未扫描(无延迟)" % (i + 1), app.cells[i]["median"], None)
+    check("A 段%d 格子无块数" % (i + 1), app.cells[i]["n"], 0)
+# 反向：任何显示了延迟数据的格子都必须来自完整读完的段（无假慢格）
+for i, c in enumerate(app.cells):
+    if c["median"] is not None:
+        check("A 有数据的段%d 必须完整读完" % (i + 1),
+              not segs[i].get("stopped"), True)
 check("A 状态标签=完成（中止）", app.lbl_state.cget("text"), "Done (aborted)")
 check("A 错误标签=无", app.lbl_errors.cget("text"), "Errors: none")
 check("A 错误树为空", len(app.tree_err.get_children()), 0)

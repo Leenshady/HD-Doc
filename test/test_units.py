@@ -188,6 +188,46 @@ check("自适应: 1 段时单行", _g(1)[2], 1)
 check("自适应: 宽画布下列数更多",
       H.plan_grid(2000, 400, 20)[1] > H.plan_grid(400, 2000, 20)[1], True)
 
+# ---------- 热力图颜色：很慢 vs 读取错误必须一眼可辨 ----------
+# 回归：旧值 #D85A30(很慢)/#A32D2D(错误) RGB 距离仅 70、色相差 15°，
+# 小格子里几乎分不开。新值必须同时满足大距离与大色相角差。
+def _rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+def _hue(c):
+    r, g, b = [x / 255.0 for x in c]
+    mx, mn = max(r, g, b), min(r, g, b)
+    if mx == mn:
+        return None
+    d = mx - mn
+    if mx == r:
+        h = ((g - b) / d) % 6
+    elif mx == g:
+        h = (b - r) / d + 2
+    else:
+        h = (r - g) / d + 4
+    return h * 60
+
+def _pair_gap(c1, c2):
+    a, b = _rgb(c1), _rgb(c2)
+    dist = sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+    h1, h2 = _hue(a), _hue(b)
+    gap = (min(abs(h1 - h2), 360 - abs(h1 - h2))
+           if h1 is not None and h2 is not None else 180.0)
+    return dist, gap
+
+_dist, _gap = _pair_gap(H.COLOR_BAD, H.COLOR_ERROR)
+check("很慢 vs 读取错误 RGB 距离 > 120", _dist > 120, True)
+check("很慢 vs 读取错误 色相差 > 90°", _gap > 90, True)
+# 其余相邻档也要可辨（正常/偏慢/很慢 渐进 + 未扫描）
+for _a, _b, _n in ((H.COLOR_OK, H.COLOR_SLOW, "正常vs偏慢"),
+                   (H.COLOR_SLOW, H.COLOR_BAD, "偏慢vs很慢"),
+                   (H.COLOR_BAD, H.COLOR_PENDING, "很慢vs未扫描")):
+    d, g = _pair_gap(_a, _b)
+    check("相邻档可辨(%s): RGB 距离 > 40" % _n, d > 40, True)
+    check("相邻档可辨(%s): 色相差 > 8°" % _n, g > 8, True)
+
 # ---------- _console_encoding：终端编码自适应 ----------
 _saved_msys = os.environ.pop("MSYSTEM", None)
 try:

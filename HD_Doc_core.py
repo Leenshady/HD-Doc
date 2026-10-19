@@ -41,8 +41,10 @@ VERSION = "1.0"
 # ---------------------------------------------------------------- 常量
 COLOR_OK = "#5DCAA5"       # 正常
 COLOR_SLOW = "#EF9F27"     # 偏慢
-COLOR_BAD = "#D85A30"      # 很慢
-COLOR_ERROR = "#A32D2D"    # 读取错误
+COLOR_BAD = "#E8630A"      # 很慢（原 #D85A30 橙红与"读取错误"暗红太近；深橙与
+                           #   偏慢金黄、读取错误紫均可辨）
+COLOR_ERROR = "#A855F7"    # 读取错误（原 #A32D2D 暗红；改紫色与"很慢"差异最大，
+                           #   且读取错误是与延迟维度不同的异常类别，用对比色表达）
 COLOR_PENDING = "#D3D1C7"  # 未扫描
 CELL_GAP = 1              # 格子间隙（px）
 CELL_SIZE_MAX = 40        # 单格最大边长（段太少时封顶，避免巨型块）
@@ -1732,20 +1734,11 @@ class FioScanner:
                               "line": tr("log.lat_unit_ns")})
 
                 base_idx = (off // bs) if off else 0
+                seg_incomplete = False   # 本段是否因主动停止而数据不完整
                 seg_lats = []
                 for rel, lat in blocks:
-                    lat_us = lat * scale
-                    all_lats.append(lat_us)
-                    seg_lats.append(lat_us)
+                    seg_lats.append(lat * scale)
                 seg_bytes_done = len(blocks) * bs
-                # 热力图一格 = 一个段：段读完发一条段级统计事件即可。
-                # 不再逐块发 block 事件——1TB 盘按 1M 块约 100 万次事件
-                # 会把队列消费（每轮至多 4000 条）拖成瓶颈。
-                if seg_lats:
-                    emit({"type": "seg_stat", "index": seg_i,
-                          "median_us": statistics.median(seg_lats),
-                          "max_us": max(seg_lats),
-                          "n_blocks": len(seg_lats)})
 
                 # fio JSON 的 job.error 是 errno 码（0=无错误），不是错误计数。
                 # 常见：5=EIO 读失败(坏块)；22=EINVAL(offset 未对齐/direct IO 不支持)；
@@ -1778,6 +1771,9 @@ class FioScanner:
                     unscanned_bytes += missing * bs
                     if self._stop_evt.is_set():
                         stopped_unscanned += missing * bs
+                        # 本段是"被用户停止截断"的：lat 样本不完整，整段放弃
+                        # （详见下方统计收集处的说明）
+                        seg_incomplete = True
                         emit({"type": "log", "stream": "info",
                               "line": tr("log.segment_stopped",
                                          i=seg_i + 1, n=len(segments),
@@ -1787,6 +1783,30 @@ class FioScanner:
                         error_blocks[miss_idx] = tr(
                             "log.unscanned_aborted", n=actual_ios, code=seg_errno)
                         emit({"type": "error_block", "index": miss_idx})
+
+                # ---- 收集本段统计 ----
+                # 主动停止时 fio 被 terminate，本段只有截断样本：SSD 上一段
+                # 很短（几百个块），启动瞬态（队列建立/首批 IO）占比被放大，
+                # 中位数虚高——用户反馈"扫描 SSD 时主动停止，当前块显示很慢"。
+                # 判定依据是停止事件 + 实际 IO 不足（而非 break 路径，见上）；
+                # 恰好读完的段（actual>=expected）即使 stop_evt 已设置也保留，
+                # 数据是完整的不误伤。整段放弃：lat 不进全局统计（不污染
+                # 阈值/ok/slow/bad）、不发 seg_stat（热力图该格保持未扫描灰）、
+                # 报告 median/max 留空并标注 stopped。
+                if seg_incomplete:
+                    emit({"type": "log", "stream": "info",
+                          "line": tr("log.segment_lat_discarded",
+                                     i=seg_i + 1, n=len(segments))})
+                else:
+                    all_lats.extend(seg_lats)
+                    # 热力图一格 = 一个段：段读完发一条段级统计事件即可。
+                    # 不再逐块发 block 事件——1TB 盘按 1M 块约 100 万次事件
+                    # 会把队列消费（每轮至多 4000 条）拖成瓶颈。
+                    if seg_lats:
+                        emit({"type": "seg_stat", "index": seg_i,
+                              "median_us": statistics.median(seg_lats),
+                              "max_us": max(seg_lats),
+                              "n_blocks": len(seg_lats)})
                 located_here = 0
 
                 fe = job.get("first_error") or 0
@@ -1819,8 +1839,11 @@ class FioScanner:
                     "errno": seg_errno,
                     "errno_name": ERRNO_NAMES.get(seg_errno, "") if seg_errno else "",
                     "actual_ios": actual_ios, "expected_ios": expected_ios,
-                    "median_us": statistics.median(seg_lats) if seg_lats else None,
-                    "max_us": max(seg_lats) if seg_lats else None,
+                    "stopped": seg_incomplete,
+                    "median_us": (None if seg_incomplete else
+                                  (statistics.median(seg_lats) if seg_lats else None)),
+                    "max_us": (None if seg_incomplete else
+                               (max(seg_lats) if seg_lats else None)),
                     "runtime_ms": rd.get("runtime"),
                     "bw_bytes": rd.get("bw_bytes"),
                 })
@@ -1916,7 +1939,9 @@ def write_reports(outdir, summary, lang=None):
                         seg["actual_ios"], seg["expected_ios"],
                         seg["errno"] or "", seg["errno_name"],
                         round(seg["median_us"] / 1000.0, 3) if seg["median_us"] is not None else "",
-                        round(seg["max_us"] / 1000.0, 3) if seg["max_us"] is not None else ""])
+                        round(seg["max_us"] / 1000.0, 3) if seg["max_us"] is not None else "",
+                        # 主动停止的段延迟统计已丢弃：median/max 留空并标注
+                        "yes" if seg.get("stopped") else ""])
     files.append(p)
 
     p = os.path.join(outdir, "errors.csv")
