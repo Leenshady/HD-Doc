@@ -5,6 +5,7 @@
 完成/错误/快速汇总、横幅替代弹窗。"""
 import os
 import sys
+import time
 import types
 
 # 阻止启动时的自动提权弹窗阻塞无人值守测试（见 _startup_admin_check）
@@ -13,6 +14,11 @@ os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 os.environ["HDTUNE_LANG"] = "en"
 # 固定浅色主题，保证断言确定（主题切换行为单独验证）
 os.environ["HDTUNE_THEME"] = "bootstrap-light"
+# 运行日志重定向到临时目录：避免污染真实配置目录；结束前断言内容后清理
+import shutil
+import tempfile
+_LOG_DIR = tempfile.mkdtemp(prefix="HD_Doc_log_")
+os.environ["HD_DOC_LOG_DIR"] = _LOG_DIR
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import HD_Doc_gui as H
@@ -273,9 +279,24 @@ assert app.style.theme_use() == "bootstrap-light"
 assert str(app.canvas_map.cget("bg")).lower() == app.style.colors.bg.lower()
 print("Theme switch OK (live theme_use; native widgets follow)")
 
-# ---- 关于窗口（一行简介，无作者行，图标限制大小） ----
-app._show_about()
-app.update()
+# ---- 关于窗口（一行简介，无作者行，图标限制大小，标题栏图标走 iconphoto） ----
+# 记录 _show_about 对 iconphoto 的调用：标题栏图标必须走 iconphoto 且用
+# 缩放版（iconbitmap 渲染不了 PNG 压缩的 .ico → 标题栏图标空白）
+_iconphoto_calls = []
+_orig_iconphoto = H.tk.Wm.iconphoto
+
+
+def _spy_iconphoto(self, default=False, *args):
+    _iconphoto_calls.append((default, args))
+    return _orig_iconphoto(self, default, *args)
+
+
+H.tk.Wm.iconphoto = _spy_iconphoto
+try:
+    app._show_about()
+    app.update()
+finally:
+    H.tk.Wm.iconphoto = _orig_iconphoto
 about_win = [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"]
 assert about_win, "About window should open"
 about_labels = [w for w in about_win[0].winfo_children()[0].winfo_children()
@@ -306,7 +327,13 @@ assert about_imgs[0] == str(app._about_icon), \
 assert max(app._about_icon.width(), app._about_icon.height()) <= H.ABOUT_ICON_PX, \
     "about icon must be bounded to %dpx: got %dx%d" % (
         H.ABOUT_ICON_PX, app._about_icon.width(), app._about_icon.height())
-print("About window OK (one-line intro, no author line, icon %dx%d <= %dpx)"
+# 标题栏图标：必须通过 iconphoto 设置（iconbitmap 对 PNG 压缩的 .ico 静默
+# 无效果，标题栏图标就是空白），且必须用 48px 缩放版而非 1248px 原图
+assert any(a and a[0] is app._about_icon for _d, a in _iconphoto_calls), \
+    "About dialog must set its title-bar icon via iconphoto (bounded copy): %r" % (
+        _iconphoto_calls,)
+print("About window OK (one-line intro, no author line, icon %dx%d <= %dpx, "
+      "title-bar icon via iconphoto)"
       % (app._about_icon.width(), app._about_icon.height(), H.ABOUT_ICON_PX))
 # 弹窗按钮必须 i18n（本测试固定英文 → "OK"）；弹窗必须真正获焦：
 # 模态 grab 落在弹窗上、键盘焦点落在"确定"按钮（回车即关）、Escape 也能关
@@ -360,6 +387,26 @@ app.update()
 assert not popped, "failure must use the in-app banner, not dialogs: %r" % (popped,)
 assert "test failure message" in app.lbl_banner.cget("text")
 
+# ---- Tk 回调异常必须落运行日志（默认只打印 stderr，打包版不可见） ----
+app.after(5, lambda: 1 / 0)
+time.sleep(0.15)          # 等定时器到期：update() 只处理已就绪的事件
+app.update()
+app.update()
+
+# ---- 运行日志：单文件，含启动/扫描结果/失败/回调异常 ----
+_log_file = os.path.join(_LOG_DIR, "HD_Doc.log")
+assert os.path.isfile(_log_file), "run log should exist at %s" % _log_file
+_log_txt = open(_log_file, encoding="utf-8").read()
+for _needle in ("gui: start", "scan: finished", "scan: failed",
+                "tk callback exception", "ZeroDivisionError"):
+    assert _needle in _log_txt, "run log should contain %r:\n%s" % (
+        _needle, _log_txt[-800:])
+assert os.listdir(_LOG_DIR) == ["HD_Doc.log"], \
+    "exactly one log file: %r" % (os.listdir(_LOG_DIR),)
+print("Run log OK (single file %s, %d bytes)"
+      % (_log_file, os.path.getsize(_log_file)))
+
 app.destroy()
 root.destroy()
+shutil.rmtree(_LOG_DIR, ignore_errors=True)
 print("\nGUI smoke test: all passed")

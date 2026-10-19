@@ -21,6 +21,7 @@ os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 os.environ["HDTUNE_LANG"] = "en"
 # 固定浅色主题，保证断言确定
 os.environ["HDTUNE_THEME"] = "bootstrap-light"
+os.environ["HD_DOC_LOG"] = "off"   # 运行日志隔离：不写真实配置目录
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import HD_Doc_gui as H

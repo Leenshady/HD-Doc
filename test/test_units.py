@@ -361,6 +361,56 @@ check("parse_segment_size 英文整盘", H.parse_segment_size("Whole disk at onc
 check("parse_segment_size 中文整盘", H.parse_segment_size("整盘一次（最快）"), None)
 check("parse_segment_size 4G", H.parse_segment_size("4G"), 4 * 1024 ** 3)
 
+# ---------- 运行日志：单文件、上限截断、开关、异常堆栈 ----------
+_log_tmp = _tempfile.mkdtemp(prefix="HD_Doc_log_")
+try:
+    _orig_log_dir = os.environ.get("HD_DOC_LOG_DIR")
+    _orig_log_sw = os.environ.get("HD_DOC_LOG")
+    os.environ["HD_DOC_LOG_DIR"] = _log_tmp
+    os.environ["HD_DOC_LOG"] = "1"
+    check("run_log_path 指向覆盖目录",
+          H.run_log_path(), os.path.join(_log_tmp, "HD_Doc.log"))
+    check("log_event 写入成功", H.log_event("unit test line"), True)
+    _txt = open(H.run_log_path(), encoding="utf-8").read()
+    check("日志含消息正文", "unit test line" in _txt, True)
+    check("日志格式含时间戳与级别",
+          _txt.startswith("20") and "[INFO]" in _txt, True)
+    # 超过上限 → 整文件截断重写（旧内容丢弃），目录里始终只有一个文件
+    with open(H.run_log_path(), "w", encoding="utf-8") as _f:
+        _f.write("x" * (H.LOG_MAX_BYTES + 16))
+    H.log_event("after truncate")
+    _txt2 = open(H.run_log_path(), encoding="utf-8").read()
+    check("超限后截断重写（旧内容丢弃、不超上限）",
+          "after truncate" in _txt2 and len(_txt2) < H.LOG_MAX_BYTES, True)
+    check("目录下始终只有一份日志", os.listdir(_log_tmp), ["HD_Doc.log"])
+    # 异常堆栈（含上下文与类型）
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        check("log_exception 记录堆栈", H.log_exception("unit ctx"), True)
+    _txt3 = open(H.run_log_path(), encoding="utf-8").read()
+    check("堆栈含上下文与异常类型",
+          "unit ctx" in _txt3 and "ValueError: boom" in _txt3, True)
+    # HD_DOC_LOG=off 整体关闭
+    os.environ["HD_DOC_LOG"] = "off"
+    check("HD_DOC_LOG=off 时不写盘", H.log_event("should not appear"), False)
+    _txt4 = open(H.run_log_path(), encoding="utf-8").read()
+    check("关闭后日志内容不变", "should not appear" in _txt4, False)
+    # 路径不可写时静默失败（日志绝不拖垮主流程）
+    os.environ["HD_DOC_LOG"] = "1"
+    os.environ["HD_DOC_LOG_DIR"] = os.path.join(_log_tmp, "HD_Doc.log")
+    check("日志路径不可写时静默失败", H.log_event("x"), False)
+finally:
+    if _orig_log_dir is None:
+        os.environ.pop("HD_DOC_LOG_DIR", None)
+    else:
+        os.environ["HD_DOC_LOG_DIR"] = _orig_log_dir
+    if _orig_log_sw is None:
+        os.environ.pop("HD_DOC_LOG", None)
+    else:
+        os.environ["HD_DOC_LOG"] = _orig_log_sw
+    _shutil.rmtree(_log_tmp, ignore_errors=True)
+
 print()
 if fails:
     print("失败 %d 项: %s" % (len(fails), fails))

@@ -32,15 +32,23 @@ def cli_main(args):
     _ensure_console()
     # CLI 输出固定英文（界面语言只影响 GUI）
     set_language("en")
+    core.log_event("cli: start target=%s bs=%s segment_gb=%s quick=%s "
+                   "limit_mb=%s offset_mb=%s export=%s"
+                   % (args.target, args.bs, args.segment_gb, args.quick,
+                      args.limit_mb, args.offset_mb, args.export))
     fio = resolve_fio(args.fio)
     target = normalize_target_path(args.target)
     if not target:
+        core.log_event("cli: --target missing or invalid (%r)" % (args.target,),
+                       level="ERROR")
         print("Error: --cli mode requires --target")
         return 2
     if is_physical_target(target) and not is_admin():
         # 打开 \\.\PhysicalDriveN 必须管理员权限，否则 fio 每个块都会报
         # "windowsaio: failed to open file"。这里自动申请 UAC 提权重启。
         if getattr(args, "no_elevate", False) or not auto_elevate_enabled():
+            core.log_event("cli: physical disk target but elevation disabled "
+                           "(--no-elevate); aborting", level="ERROR")
             print("[Error] Scanning physical disks requires administrator rights "
                   "(fio must be elevated to open \\\\.\\PhysicalDriveN).")
             print("        Right-click the terminal and run as administrator, "
@@ -50,9 +58,12 @@ def cli_main(args):
               "requesting administrator rights (UAC)...")
         ok, code, err = request_elevation(wait=True)
         if not ok:
+            core.log_event("cli: elevation failed: %s" % (err or "unknown"),
+                           level="ERROR")
             print("[Error] Elevation failed: %s" % (err or "unknown error"))
             print("        Right-click the terminal, run as administrator, retry.")
             return 2
+        core.log_event("cli: elevated child finished with exit code %s" % (code,))
         print("[Elevate] Elevated process finished with exit code %s." % code)
         return code if isinstance(code, int) else 0
     size = query_target_size(target)
@@ -118,6 +129,8 @@ def cli_main(args):
     engine = args.ioengine or ("windowsaio" if IS_WIN else "libaio")
     engines = list_fio_engines(fio)
     if engines is not None and engine not in engines:
+        core.log_event("cli: ioengine %s unsupported by %s (available: %s)"
+                       % (engine, fio, ", ".join(sorted(engines))), level="ERROR")
         print("\n[Error] Current fio does not support ioengine '%s'; scan not started." % engine)
         print("        Engines actually supported by this fio: %s" % "、".join(sorted(engines)))
         print("        Note: libaio / posixaio are native Linux engines; the Windows "
@@ -125,6 +138,11 @@ def cli_main(args):
               "\"failed to load engine\".")
         print("        On Windows use: %s" % "、".join(ENGINES_WIN))
         return 2
+    core.log_event("cli: plan target=%s size=%s bs=%s segments=%d engine=%s "
+                   "direct=%s quick=%s fio=%s"
+                   % (target, fmt_bytes(size), fmt_bytes(bs), len(segments),
+                      engine, not args.no_direct,
+                      bool(getattr(args, "quick", False)), fio))
     print("IO engine : %s" % engine)
     print("-" * 62)
 
@@ -173,13 +191,24 @@ def cli_main(args):
             on_event=on_event,
             quick=bool(getattr(args, "quick", False) and size))
     except KeyboardInterrupt:
+        core.log_event("cli: interrupted by user (KeyboardInterrupt)")
         scanner.stop()
         print("\nAborted.")
         return 130
 
     if not summary:
+        core.log_event("cli: scan failed (no summary); see fio output above",
+                       level="ERROR")
         print("\nScan failed; see fio output above.")
         return 1
+
+    core.log_event("cli: finished target=%s blocks=%d ok=%d slow=%d bad=%d "
+                   "errors=%d aborted=%s stopped=%s elapsed=%.1fs"
+                   % (target, summary["n_blocks"], summary["ok"],
+                      summary["slow"], summary["bad"],
+                      len(summary["error_blocks"]), summary["aborted"],
+                      bool(summary.get("stop_requested")),
+                      summary["elapsed_s"]))
 
     print("\n" + "=" * 62)
     suffix = " (aborted, data incomplete)" if summary["aborted"] else ""
@@ -227,6 +256,8 @@ def cli_main(args):
         outdir = os.path.join(export_dir or ".", "HD_Doc_report_%s"
                               % datetime.now().strftime("%Y%m%d_%H%M%S"))
         files = write_reports(outdir, summary, lang="en")
+        core.log_event("cli: report exported to %s (%d file(s))"
+                       % (outdir, len(files)))
         print("\nReport exported to:")
         for p in files:
             print("  %s" % p)

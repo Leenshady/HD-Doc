@@ -63,6 +63,28 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 英文回退全部自动生效，不用改任何代码。`_` 或 `.` 开头的文件视为模板
 会跳过；缺失的键回退英文。
 
+## 运行日志
+
+每次运行都会把关键事件追加到唯一一份日志文件 `HD_Doc.log`（与配置同目录：
+Windows 为 `%APPDATA%\HD_Doc\HD_Doc.log`，其他平台为 `~/.config/HD_Doc/`）：
+启动信息、带完整参数的扫描开始、结果汇总、报告导出、语言/主题切换，
+以及任何异常连同堆栈（含 Tk 回调里未捕获的异常——否则它们只进 stderr，
+打包版没有控制台，用户根本看不到）。示例：
+
+```
+2026-10-19 12:23:00.014 [INFO] startup: ver=1.0 mode=cli frozen=False admin=True argv=--cli --target ...
+2026-10-19 12:23:00.168 [INFO] cli: plan target=... size=8.0 MB bs=512.0 KB segments=1 engine=windowsaio direct=True quick=False fio=C:\Program Files\fio\fio.EXE
+2026-10-19 12:23:00.997 [INFO] cli: finished target=... blocks=16 ok=16 slow=0 bad=0 errors=0 aborted=False stopped=False elapsed=0.8s
+```
+
+永远只有一份：超过 512KB 即整文件截断重写，不会按日期/次数堆积出多个
+日志文件。反馈问题时把这一个文件发出来即可。
+
+- `HD_DOC_LOG_DIR=<目录>` 改日志目录（测试/便携场景）
+- `HD_DOC_LOG=off` 整体关闭
+
+写日志失败（只读目录/权限不足）时静默忽略，绝不会影响扫描主流程。
+
 ## 打包 Windows 可执行文件
 
 ```

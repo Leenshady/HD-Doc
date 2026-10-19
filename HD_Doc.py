@@ -36,6 +36,11 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
     扫描镜像文件无需管理员）
   - 提权重启的子进程使用 pythonw.exe（GUI 子系统）启动，不会再伴随
     命令窗口；CLI 模式提权后输出会自动绑回原终端
+  - 运行日志：关键事件（启动/扫描开始与结果/导出/偏好切换）与异常堆栈
+    写入唯一一份日志 <配置目录>/HD_Doc.log（Windows: %APPDATA%\\HD_Doc\\），
+    超过 512KB 整文件截断重写——不会按日期/次数产生多个日志文件；
+    HD_DOC_LOG_DIR=<dir> 可改目录，HD_DOC_LOG=off 可关闭。
+    排查问题时把这一个文件发出来即可
   - 本工具只读，不会向磁盘写入任何数据
 """
 
@@ -106,8 +111,14 @@ def main(argv=None):
                 else "not bundled (use system fio or --fio PATH)"
         else:
             fio_src = "source"
+        core.log_event("startup: --version (frozen=%s fio=%s)"
+                       % (getattr(sys, "frozen", False), fio_src))
         print("HD Doc %s (fio: %s)" % (VERSION, fio_src))
         return 0
+    core.log_event("startup: ver=%s mode=%s frozen=%s admin=%s argv=%s"
+                   % (VERSION, "cli" if args.cli else "gui",
+                      getattr(sys, "frozen", False), core.is_admin(),
+                      " ".join(sys.argv[1:])))
     if args.cli:
         # 延迟导入：CLI 路径不加载 ttkbootstrap / GUI 代码
         from HD_Doc_cli import cli_main
@@ -116,6 +127,8 @@ def main(argv=None):
         # 只有 GUI 模式才导入 ttkbootstrap
         from HD_Doc_gui import HDDocApp, ensure_admin_at_startup
     except ImportError as e:
+        core.log_event("startup: cannot import GUI (ttkbootstrap?): %s" % e,
+                       level="ERROR")
         print("Error: cannot start GUI (ttkbootstrap not installed? %s)" % e)
         print("Install it with:  python -m pip install ttkbootstrap")
         print("Or use the CLI mode:")
@@ -124,11 +137,20 @@ def main(argv=None):
     # 启动即提权：非管理员时先弹 UAC（不等扫到物理盘再问），确认后由
     # 提权进程接管、本进程直接退出；取消则保持标准权限继续启动
     if ensure_admin_at_startup():
+        core.log_event("startup: relaunched elevated; this process exits")
         return 0
     app = HDDocApp()
     app.mainloop()
+    core.log_event("gui: mainloop returned")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        _rc = main()
+    except SystemExit:
+        raise                       # argparse 等正常退出路径，不记日志
+    except BaseException as _e:     # 含 KeyboardInterrupt：留痕后原样抛出
+        core.log_exception("unhandled exception in main()", _e)
+        raise
+    sys.exit(_rc)

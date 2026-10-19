@@ -9,6 +9,8 @@ import sys
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ["HD_DOC_LOG"] = "off"   # 运行日志隔离：不写真实配置目录
+
 import HD_Doc_core as HC
 import HD_Doc_cli as HCLI
 

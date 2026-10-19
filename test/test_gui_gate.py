@@ -15,6 +15,7 @@ import time
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 os.environ["HDTUNE_LANG"] = "en"
 os.environ["HDTUNE_THEME"] = "bootstrap-light"
+os.environ["HD_DOC_LOG"] = "off"   # 运行日志隔离：不写真实配置目录
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import HD_Doc_gui as H
 from HD_Doc_core import _pythonw_path, _elevation_target, tr

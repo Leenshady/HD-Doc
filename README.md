@@ -73,6 +73,32 @@ English fallback all follow automatically, no code change. Files whose
 name starts with `_` or `.` are treated as templates and skipped;
 missing keys fall back to English.
 
+## Run log
+
+Every run appends its key events to a single log file — `HD_Doc.log`
+next to the config (`%APPDATA%\HD_Doc\HD_Doc.log` on Windows,
+`~/.config/HD_Doc/` elsewhere): startup, scan start with its full
+parameters, the result summary, report export, language/theme changes,
+and any exception with its traceback (including uncaught Tk callback
+exceptions, which otherwise only reach stderr and are invisible in the
+windowed build). Example:
+
+```
+2026-10-19 12:23:00.014 [INFO] startup: ver=1.0 mode=cli frozen=False admin=True argv=--cli --target ...
+2026-10-19 12:23:00.168 [INFO] cli: plan target=... size=8.0 MB bs=512.0 KB segments=1 engine=windowsaio direct=True quick=False fio=C:\Program Files\fio\fio.EXE
+2026-10-19 12:23:00.997 [INFO] cli: finished target=... blocks=16 ok=16 slow=0 bad=0 errors=0 aborted=False stopped=False elapsed=0.8s
+```
+
+There is always exactly one file: past 512 KB it is truncated and
+rewritten from the top, so no per-date or per-run logs pile up. Send
+this one file when reporting a problem.
+
+- `HD_DOC_LOG_DIR=<dir>` moves the log (tests, portable setups)
+- `HD_DOC_LOG=off` disables it entirely
+
+Logging never raises: an unwritable path is silently ignored, so it can
+not break a scan.
+
 ## Build the Windows executable
 
 ```

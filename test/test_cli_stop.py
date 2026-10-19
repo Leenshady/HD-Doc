@@ -23,6 +23,7 @@ import _thread
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
+os.environ["HD_DOC_LOG"] = "off"   # 运行日志隔离：不写真实配置目录
 import HD_Doc_cli  # noqa: E402
 import HD_Doc_core as core  # noqa: E402
 

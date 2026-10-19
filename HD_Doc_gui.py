@@ -164,6 +164,12 @@ class HDDocApp(ttk.Window):
         self._center_on_screen()
         self._poll_after = self.after(100, self._poll_queue)
         self._admin_after = self.after(200, self._startup_admin_check)
+        # Tk 回调里未捕获的异常默认只打印到 stderr（打包版没有控制台 →
+        # 用户什么都看不到）：统一落到运行日志，便于事后排查
+        self.report_callback_exception = self._on_tk_exception
+        core.log_event("gui: start ver=%s frozen=%s admin=%s lang=%s theme=%s"
+                       % (VERSION, getattr(sys, "frozen", False), is_admin(),
+                          get_language(), get_theme()))
 
     # ---------------------------------------------------------- 主题与图标
     def _setup_theme(self):
@@ -185,7 +191,12 @@ class HDDocApp(ttk.Window):
         style.configure("Treeview.Heading", padding=(6, 4))
 
     def _set_window_icon(self):
-        """标题栏图标（.ico）+ 任务栏/Alt-Tab 图标（.png）；缺失时静默跳过"""
+        """标题栏 + 任务栏/Alt-Tab 图标（.png，经 iconphoto）。
+
+        注意：iconbitmap(.ico) 只是兜底——Tk 的 Windows 端口渲染不了 PNG
+        压缩的 .ico（静默无效果，表现为标题栏图标空白），真正生效的是
+        随后 iconphoto 设置的那个 PNG（标题栏与任务栏都归它管）。
+        资源缺失时两者都静默跳过。"""
         d = _resource_dir()
         try:
             self.iconbitmap(os.path.join(d, "HD_Doc.ico"))
@@ -272,6 +283,7 @@ class HDDocApp(ttk.Window):
             self.var_lang.set(lang)
             return
         if set_language(lang):          # 写入配置 + 进程内切换
+            core.log_event("pref: language -> %s" % lang)
             self.var_lang.set(lang)
             self._rebuild_ui()
 
@@ -286,6 +298,7 @@ class HDDocApp(ttk.Window):
             self.var_theme.set(theme)
             return
         if set_theme(theme):            # 写入配置 + 进程内切换
+            core.log_event("pref: theme -> %s" % theme)
             self.var_theme.set(theme)
             self.style.theme_use(theme)
             self._setup_theme()         # 行高等定制跨主题保留（幂等）
@@ -636,10 +649,17 @@ class HDDocApp(ttk.Window):
         win.title(tr("gui.about.title"))
         win.transient(self)
         win.resizable(False, False)
+        # 标题栏图标必须走 iconphoto：Tk 的 Windows 端口渲染不了 PNG 压缩的
+        # .ico（iconbitmap 静默无效果 → 标题栏图标空白；主窗口同样因此改用
+        # iconphoto 设置标题栏/任务栏图标）。用 48px 缩放版即可，Windows 会
+        # 按标题栏尺寸自行缩放；两条路都失败才回退 iconbitmap。
         try:
-            win.iconbitmap(os.path.join(_resource_dir(), "HD_Doc.ico"))
+            win.iconphoto(False, self._about_icon or self._icon_img)
         except Exception:
-            pass
+            try:
+                win.iconbitmap(os.path.join(_resource_dir(), "HD_Doc.ico"))
+            except Exception:
+                pass
         frm = ttk.Frame(win, padding=24)
         frm.pack(fill="both", expand=True)
         head = ttk.Frame(frm)
@@ -681,6 +701,11 @@ class HDDocApp(ttk.Window):
             self.focus_force()
         except Exception:
             pass
+
+    def _on_tk_exception(self, exc_type, exc_value, exc_tb):
+        """Tk 回调未捕获异常 → 运行日志（默认行为是打印到 stderr，
+        打包版无控制台用户不可见；这里连同堆栈落盘便于排查）"""
+        core.log_exception("tk callback exception", exc_value)
 
     # ---------------------------------------------------------- 交互
     def _refresh_drives(self):
@@ -808,6 +833,7 @@ class HDDocApp(ttk.Window):
         if not _pythonw_path():
             self._log("warn", "gui.log.no_pythonw")
         self._log("info", "gui.log.elevate_requested")
+        core.log_event("elevate: requesting administrator relaunch (gui=True)")
         self.after(200, self._exit_now)
 
     def _exit_now(self):
@@ -969,6 +995,10 @@ class HDDocApp(ttk.Window):
                   t=target, bs=fmt_bytes(bs), n=len(segments),
                   kind=tr("gui.log.kind_region") if quick
                   else tr("gui.log.kind_segment"), fio=fio)
+        core.log_event("scan: start target=%s bs=%s segments=%d quick=%s "
+                       "engine=%s direct=%s fio=%s"
+                       % (target, fmt_bytes(bs), len(segments), quick,
+                          engine_val or "auto", direct_val, fio))
 
     def _run_worker(self, target, bs, segments, size, quick=False,
                     engine=None, direct=True):
@@ -982,6 +1012,7 @@ class HDDocApp(ttk.Window):
                 on_event=self._post,
                 quick=quick)
         except Exception as e:
+            core.log_exception("scan: worker thread crashed", e)
             self.q.put({"type": "failed", "message": "%s: %s" % (type(e).__name__, e)})
         finally:
             self.q.put({"type": "worker_done"})
@@ -994,6 +1025,7 @@ class HDDocApp(ttk.Window):
             self.scanner.stop()
             self._set_state("gui.state_stopping")
             self._log("warn", "gui.log.stop_requested")
+            core.log_event("scan: stop requested by user")
 
     def _on_close(self):
         if self.scanner and self.worker and self.worker.is_alive():
@@ -1001,7 +1033,9 @@ class HDDocApp(ttk.Window):
                                  tr("gui.msg.exit_scanning")):
                 return
             self.scanner.stop()
+            core.log_event("scan: stopped because the app window is closing")
         self._cancel_timers()
+        core.log_event("gui: exit")
         self.destroy()
 
     # ---------------------------------------------------------- 网格（横向 · 一格 = 一段）
@@ -1201,6 +1235,12 @@ class HDDocApp(ttk.Window):
                 self.cells[cell]["errors"] += 1
         self._redraw_cells()
         self._render_result_ui(s)
+        core.log_event(
+            "scan: finished target=%s blocks=%d ok=%d slow=%d bad=%d "
+            "errors=%d aborted=%s stopped=%s elapsed=%.1fs"
+            % (s["target"], s["n_blocks"], s["ok"], s["slow"], s["bad"],
+               len(s["error_blocks"]), s["aborted"],
+               bool(s.get("stop_requested")), s["elapsed_s"]))
 
     def _redraw_cells(self):
         """用当前阈值全量重绘热力图（最终阈值/重建界面后调用）"""
@@ -1257,6 +1297,7 @@ class HDDocApp(ttk.Window):
     def _on_failed(self, msg):
         self._set_state("gui.state_failed")
         self._log_raw("error", msg)
+        core.log_event("scan: failed: %s" % msg, level="ERROR")
         self._banner("gui.banner.failed", "error", msg=msg)
 
     def _render_error_tree(self):
@@ -1330,6 +1371,8 @@ class HDDocApp(ttk.Window):
                               % datetime.now().strftime("%Y%m%d_%H%M%S"))
         files = write_reports(outdir, self.summary)
         self._log("info", "gui.log.exported", d=outdir)
+        core.log_event("report: exported to %s (%d file(s))"
+                       % (outdir, len(files)))
         self._banner("gui.log.exported", "ok", d=outdir)
 
     def _update_status(self, pct, bw, eta_s, errors):

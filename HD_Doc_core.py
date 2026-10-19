@@ -30,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from array import array
 from bisect import bisect_right
 from datetime import datetime
@@ -197,6 +198,82 @@ def save_config(cfg):
         with open(_config_path(), "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
         return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- 运行日志
+# 排查问题用：关键事件与异常堆栈追加到一份日志文件——只此一份，不轮转、
+# 不按日期/次数分文件（用户反馈问题时直接要这一个文件即可）。
+#   - 位置：用户配置目录 HD_Doc.log（与 config.json 同目录）
+#     Windows: %APPDATA%\HD_Doc\HD_Doc.log
+#   - 上限：LOG_MAX_BYTES，超过即整文件截断重写（丢弃最旧内容），
+#     因此任何情况下目录里都只有这一个日志文件
+#   - 环境变量 HD_DOC_LOG_DIR=<dir> 改目录（测试/便携场景）；
+#     HD_DOC_LOG=off/0/no 可整体关闭
+#   - 所有写盘失败静默忽略：日志只是辅助，绝不能影响主流程
+LOG_FILENAME = "HD_Doc.log"
+LOG_MAX_BYTES = 512 * 1024
+_LOG_OFF = {"0", "off", "no", "false", "none"}
+
+
+def _log_enabled():
+    """HD_DOC_LOG=off/0/no/false/none 时整体关闭（默认开）"""
+    return (os.environ.get("HD_DOC_LOG") or "").strip().lower() not in _LOG_OFF
+
+
+def _log_dir():
+    """日志目录：HD_DOC_LOG_DIR 覆盖，否则用户配置目录"""
+    override = (os.environ.get("HD_DOC_LOG_DIR") or "").strip()
+    return override or _config_dir()
+
+
+def run_log_path():
+    """运行日志文件路径（唯一一份；GUI/CLI 共用）"""
+    return os.path.join(_log_dir(), LOG_FILENAME)
+
+
+def log_event(msg, level="INFO"):
+    """追加一条运行日志，格式：'YYYY-MM-DD HH:MM:SS.mmm [级别] 消息'。
+
+    超过 LOG_MAX_BYTES 先截断再写（旧内容丢弃，文件数恒为 1）；
+    任何失败（只读盘/权限）静默返回 False，绝不抛异常影响主流程。
+    """
+    if not _log_enabled():
+        return False
+    try:
+        path = run_log_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            if os.path.getsize(path) > LOG_MAX_BYTES:
+                with open(path, "w", encoding="utf-8"):
+                    pass          # 截断：只保留最新的一段
+        except OSError:
+            pass
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("%s [%s] %s\n" % (stamp, level, msg))
+        return True
+    except Exception:
+        return False
+
+
+def log_exception(context, exc=None):
+    """记录异常（含完整堆栈）到运行日志；exc 省略时取当前异常。
+
+    多行堆栈缩进 4 空格，保持"一条事件一个逻辑块"的可读性。
+    """
+    try:
+        if exc is None:
+            tb = traceback.format_exc()
+        else:
+            tb = "".join(traceback.format_exception(type(exc), exc,
+                                                    exc.__traceback__))
+        tb = tb.rstrip()
+        if not tb:
+            tb = "%s: %s" % (type(exc).__name__, exc)
+        body = "\n    ".join(tb.splitlines())
+        return log_event("%s\n    %s" % (context, body), level="ERROR")
     except Exception:
         return False
 
