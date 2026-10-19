@@ -63,10 +63,19 @@ and register the code in `LANGUAGES` in `HD_Doc_core.py`.
 python build_exe.py
 ```
 
-Produces `dist/HD_Doc.exe` (single file). fio.exe, the `lang/` files and the
-`img/` icon are bundled when found on the build machine. Requires a Python
-with tkinter and PyInstaller, plus `pip install ttkbootstrap` (see
-`requirements.txt`).
+Produces two single-file variants in `dist/`:
+
+| File | fio | Size | Use when |
+|------|-----|------|----------|
+| `HD_Doc.exe` | bundled | ~31 MB | distributing to machines without fio |
+| `HD_Doc_NoFio.exe` | not bundled | ~29 MB | fio is already installed, or you pass `--fio PATH` |
+
+Both bundle the `lang/` files and the `img/` icon; runtime behavior is
+identical. `--variant fio` / `--variant nofio` builds just one,
+`--onedir` switches to directory mode. Requires a Python with tkinter
+and PyInstaller, plus `pip install ttkbootstrap` (see
+`requirements.txt`). `--version` reports where fio comes from
+(`bundled` / `not bundled`).
 
 ## Tests
 

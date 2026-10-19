@@ -56,9 +56,18 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 python build_exe.py
 ```
 
-产出 `dist/HD_Doc.exe`（单文件）。构建机上找得到 fio.exe 时会一并打入，
-`lang/` 语言文件与 `img/` 图标也会打入。需要带 tkinter 且装有 PyInstaller
-的 Python，并 `pip install ttkbootstrap`（见 `requirements.txt`）。
+一次打出两个变体到 `dist/`：
+
+| 文件 | fio | 体积 | 适用场景 |
+|------|-----|------|----------|
+| `HD_Doc.exe` | 内置 | ~31 MB | 分发给没装 fio 的电脑 |
+| `HD_Doc_NoFio.exe` | 不内置 | ~29 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
+
+两者都内置 `lang/` 语言文件与 `img/` 图标，运行时行为完全一致；
+`--variant fio` / `--variant nofio` 可只打一个，`--onedir` 切换目录模式。
+需要带 tkinter 且装有 PyInstaller 的 Python，并 `pip install ttkbootstrap`
+（见 `requirements.txt`）。`--version` 会如实报告 fio 来源
+（`bundled` / `not bundled`）。
 
 ## 测试
 

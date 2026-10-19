@@ -1042,6 +1042,20 @@ def clamp_bs(bs, size):
     return v
 
 
+def bundled_fio_path():
+    """打包版内置 fio 的路径（存在则返回，否则 None）。
+
+    仅 --add-binary 打进 fio 的构建（HD_Doc.exe）有；--no-fio 构建
+    （HD_Doc_NoFio.exe）解压目录里没有 fio.exe，返回 None，
+    --version 据此如实报告 fio 来源。
+    """
+    if getattr(sys, "frozen", False):
+        p = os.path.join(getattr(sys, "_MEIPASS", ""), "fio.exe")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def resolve_fio(user_path=None):
     """按优先级定位 fio 可执行文件"""
     cands = []

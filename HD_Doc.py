@@ -19,11 +19,14 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --no-elevate    # 禁止自动提权
 
 打包成 Windows 可执行文件
-  python build_exe.py          # PyInstaller 单文件打包（输出 dist/HD_Doc.exe）
-  打包版自带 fio.exe 与 lang/ 语言文件，双击即用：
+  python build_exe.py          # PyInstaller 单文件打包，一次产出两个变体：
+   - dist/HD_Doc.exe       自带 fio.exe（6.5MB），拷到没装 fio 的电脑也能用
+   - dist/HD_Doc_NoFio.exe 不含 fio（体积小），运行时用系统 fio 或 --fio 指定
+  两个变体都内置 lang/ 语言文件，双击即用：
     HD_Doc.exe                                  # GUI（无控制台窗口）
     HD_Doc.exe --cli --target <目标>             # 命令行（输出自动绑回所在终端）
-    HD_Doc.exe --version                        # 验证打包版可运行
+    HD_Doc.exe --version                        # 验证打包版可运行（含 fio 来源）
+  只要单个变体：python build_exe.py --variant fio|nofio
 
 注意
   - 扫描物理磁盘需要管理员权限（fio 才能打开 \\\\.\\PhysicalDriveN）：
@@ -97,8 +100,13 @@ def main(argv=None):
 
     if args.version:
         _ensure_console()   # 打包版在命令行里运行时校正输出编码
-        print("HD Doc %s (fio: %s)"
-              % (VERSION, "bundled" if getattr(sys, "frozen", False) else "source"))
+        # fio 来源如实报告：源码运行 / 打包内置 / 打包未内置（靠系统 fio）
+        if getattr(sys, "frozen", False):
+            fio_src = "bundled" if core.bundled_fio_path() \
+                else "not bundled (use system fio or --fio PATH)"
+        else:
+            fio_src = "source"
+        print("HD Doc %s (fio: %s)" % (VERSION, fio_src))
         return 0
     if args.cli:
         # 延迟导入：CLI 路径不加载 ttkbootstrap / GUI 代码
