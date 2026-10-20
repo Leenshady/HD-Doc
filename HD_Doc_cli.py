@@ -82,9 +82,18 @@ def cli_main(args):
         seg = (aligned_off, int(args.limit_mb * 1024 * 1024))
         segments = [seg]
     else:
-        seg_bytes = None
-        if args.segment_gb and str(args.segment_gb).lower() not in ("0", "none", "整盘"):
+        # 分段默认与 GUI 一致（GUI 下拉已移除）：未显式指定 --segment-gb 时，
+        # 全段扫描按热力图格数均分（一段≈一格，有实时进度/ETA）；快速扫描
+        # 用 4G 区域默认（<4G 的盘整盘一区只读区头样本，守住"快速"语义）。
+        # 显式 0/none/整盘 仍是整盘一次。
+        seg_explicit = (args.segment_gb
+                       and str(args.segment_gb).lower() not in ("0", "none", "整盘"))
+        if seg_explicit:
             seg_bytes = parse_bs("%gG" % float(args.segment_gb))
+        elif getattr(args, "quick", False):
+            seg_bytes = QUICK_DEFAULT_SEG
+        else:
+            seg_bytes = default_segment_bytes(size)
         quick_sample = 0
         if getattr(args, "quick", False):
             if size:

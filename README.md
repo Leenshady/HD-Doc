@@ -30,12 +30,15 @@ GUI:
 python HD_Doc.py
 ```
 
-Pick a target from the dropdown, choose block size / segment size, press
-**Start scan**. Switch language or light/dark theme from the *Language* /
-*View* menus — both take effect immediately (the interface is rebuilt or
-re-themed in place, no restart; both choices are remembered). You can
-even switch while a scan is running: the scan, its progress and results
-are untouched.
+Pick a target from the dropdown, choose block size, press **Start scan**.
+Segmentation is automatic: the disk is divided into 256 segments — one per
+heatmap cell — so every segment's stats map directly onto one cell (CLI:
+`--segment-gb 0` for a single whole-disk pass, or an explicit size). The
+heatmap re-tiles itself whenever you resize the window. Switch language or
+light/dark theme from the *Language* / *View* menus — both take effect
+immediately (the interface is rebuilt or re-themed in place, no restart;
+both choices are remembered). You can even switch while a scan is running:
+the scan, its progress and results are untouched.
 
 CLI (English output):
 

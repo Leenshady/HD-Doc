@@ -145,6 +145,37 @@ check("quick_scan_setup 抽样仍 16MiB", _samp2, 16 << 20)
 check("quick_scan_setup 容量未知退化", H.quick_scan_setup(0, 4 << 20, 4 * G, 0),
       (4 << 20, [(0, None)], 0))
 
+# ---------- default_segment_bytes：默认按热力图格数分段 ----------
+# GUI 分段下拉已移除：未指定时分段大小 = ⌈容量/MAP_CELLS⌉（一段≈一格）
+check("默认分段 1TiB=4GiB（256 格）", H.default_segment_bytes(1 << 40), 4 * G)
+check("默认分段 931.5GB 盘=3907050336", H.default_segment_bytes(HDD_1TB),
+      3907050336)
+check("默认分段 512MB=2MiB", H.default_segment_bytes(512 << 20), 2 << 20)
+check("默认分段 8MB=32KiB", H.default_segment_bytes(8 << 20), 32 << 10)
+check("默认分段向上取整（1000 字节/256）", H.default_segment_bytes(1000), 4)
+check("默认分段容量未知=None", H.default_segment_bytes(None), None)
+check("默认分段容量 0=None", H.default_segment_bytes(0), None)
+check("默认分段格数为 0=None", H.default_segment_bytes(HDD_1TB, 0), None)
+# 1TB 盘按默认分段 → 257 段（段大小对齐到 bs 时被截小，末段 525MiB 补足；
+# 段数与格数同一量级，一格最多含两段，weighted_median 按块数加权）
+segs_def = H.sanitize_segments(
+    H.plan_segments(HDD_1TB, H.default_segment_bytes(HDD_1TB), 4 << 20), 4 << 20)
+check("1TB 默认分段段数=257", len(segs_def), 257)
+check("1TB 默认分段覆盖全盘", sum(s for _, s in segs_def), HDD_1TB)
+check("1TB 默认分段每段>=bs", all(s >= (4 << 20) for _, s in segs_def), True)
+# 段小于一个块时 plan_segments 退化为整盘一次（小盘，与旧 4G 默认一致）
+check("8MB 盘默认分段退化为整盘一次",
+      H.plan_segments(8 << 20, H.default_segment_bytes(8 << 20), 1 << 20),
+      [(0, None)])
+# QUICK_DEFAULT_SEG：快速扫描默认区域 4G——<4G 的盘整盘一区只读区头样本
+check("快速扫描默认区域=4GiB", H.QUICK_DEFAULT_SEG, 4 * G)
+q_def = H.plan_quick_segments(512 << 20, H.QUICK_DEFAULT_SEG, 16 << 20, 1 << 20)
+check("512MB 盘快速扫描=1 区（4G 区域被容量截断）", len(q_def), 1)
+check("512MB 盘快速扫描只读 16MiB 样本", sum(s for _, s in q_def), 16 << 20)
+q_def_1t = H.plan_quick_segments(HDD_1TB, H.QUICK_DEFAULT_SEG, 16 << 20, 4 << 20)
+check("1TB 盘快速扫描区域<=128", len(q_def_1t) <= 128, True)
+check("1TB 盘快速扫描每区 16MiB", q_def_1t[0][1], 16 << 20)
+
 # ---------- expected_io_count：停止扫描误报磁盘错误的根因修复 ----------
 # fio 对不足一个块的尾巴：512 对齐会读（文件 6.5MB/1M → 7 次 IO），
 # 不对齐直接跳过（物理盘尾 13.69MB/1M → 13 次 IO）。expected 必须用

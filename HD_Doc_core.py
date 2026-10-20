@@ -1070,6 +1070,20 @@ def sanitize_segments(segments, bs):
     return segs
 
 
+def default_segment_bytes(total_size, n_cells=MAP_CELLS):
+    """默认分段大小：按热力图格数均分整盘（一段≈一格）。
+
+    分段大小不再由用户选择（GUI 下拉已移除）：段与格一一对应时，段统计
+    直接就是格的统计（weighted_median 退化为恒等），悬停信息也最直观。
+    容量未知（裸设备/查询失败）时返回 None，由 plan_segments 走
+    "整盘一次"降级路径。小于一个 IO 块时调用方（plan_segments）会自动
+    退化为整盘一次——小盘分段没有意义。
+    """
+    if not total_size or n_cells <= 0:
+        return None
+    return -(-int(total_size) // int(n_cells))
+
+
 def expected_io_count(size, off, total_size, bs, seg_bytes_done=0):
     """一个段预期能被 fio 读走的整块数，返回 (expected_ios, unread_tail_bytes)。
 
@@ -1110,6 +1124,11 @@ def expected_io_count(size, off, total_size, bs, seg_bytes_done=0):
 QUICK_MAX_REGIONS = 128     # 区域数上限：每个区域一次 fio 启动（约 1 秒），
                             # 过多时启动开销会累积成主要耗时，故自动放大区域
 QUICK_DEFAULT_SAMPLE = 16 * 1024 * 1024   # 默认每区抽样 16MB
+QUICK_DEFAULT_SEG = 4 * 1024 * 1024 * 1024   # 快速扫描默认区域大小：分段
+                            # 下拉移除后快速扫描不再跟随"按格数分段"（那样
+                            # 小盘会被 128 区 × 区头样本读完整盘，失去"快速"
+                            # 意义）。固定 4G：<4G 的盘整盘一区只读区头样本，
+                            # 大盘由 plan_quick_segments 自动翻倍到 ≤128 区。
 
 
 def plan_quick_segments(total_size, seg_bytes, sample_bytes, bs=None,

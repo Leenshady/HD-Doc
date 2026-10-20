@@ -76,7 +76,11 @@ root, app, popups = new_app()
 app.var_target.set(BIG)
 app.var_fio.set(FIO)
 app.var_bs.set("4M")
-app.var_seg.set("256M")          # 2 段，扫几秒
+# 分段下拉已移除：默认按格数分段（512MB/256 = 2MB < 块大小 4M → 整盘一次，
+# 停止点难以稳定落在"扫描中"）。本场景要复现"停止落在第二段"的路径，
+# 白盒把默认分段临时改成 256M（2 段，扫几秒——与原 var_seg 场景等价）
+_DEFAULT_SEG_ORIG = H.default_segment_bytes
+H.default_segment_bytes = lambda size, n_cells=256: 256 << 20
 app.var_quick.set(False)
 app._start_scan()
 check("A 扫描线程已启动", app.worker is not None, True)
@@ -123,6 +127,7 @@ check("A 汇总含停止状态行", "stopped by user" in txt, True)
 app._cancel_timers()
 app.destroy()
 root.destroy()
+H.default_segment_bytes = _DEFAULT_SEG_ORIG   # 还原，避免影响后续场景
 
 # ---------------------------------------------------------------- 场景 B
 print("\n== 场景 B：停止落在扫描结束后（竞态路径，aborted=False） ==")

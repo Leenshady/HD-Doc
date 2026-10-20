@@ -56,7 +56,8 @@ assert "Permission" in admin_txt, admin_txt
 print("Permission status: %s (is_admin=%s)" % (admin_txt, H.is_admin()))
 assert app.btn_start.cget("text") == "Start scan"
 assert app.combo_bs["values"][0] == "Auto", app.combo_bs["values"]
-assert "Whole disk at once" in app.combo_seg["values"][0]
+# 分段下拉已移除：默认按热力图格数分段（GUI 不再暴露分段大小选择）
+assert not hasattr(app, "combo_seg"), "segment dropdown must be removed"
 
 # ---- 目标下拉框禁止编辑 ----
 assert str(app.combo_target.cget("state")) == "readonly", \

@@ -31,7 +31,11 @@ H.Messagebox.show_error = lambda *a, **k: None
 
 app.var_target.set(BIG)
 app.var_fio.set(FIO)
-app.var_seg.set("64M")            # 64M 区域 → 512MB 盘 8 个区域
+# 分段下拉已移除：快速扫描区域默认 QUICK_DEFAULT_SEG（4G，小盘整盘一区）。
+# 本场景要覆盖"多区域整区点亮"，白盒把默认区域临时改成 64M
+#（512MB 盘 → 8 个 64M 区域，与原 var_seg="64M" 场景等价）
+_QUICK_SEG_ORIG = H.QUICK_DEFAULT_SEG
+H.QUICK_DEFAULT_SEG = 64 << 20
 app.var_quick.set(True)           # 快速扫描：每区抽 16M
 app.var_quick_sample.set("16M")
 app._start_scan()
@@ -106,6 +110,38 @@ print("未抽样格悬停: %r" % hover_gap)
 assert "Cell #101/256" in hover_gap and "not sampled" in hover_gap, hover_gap
 app.cells[100]["median"] = app.cells[99]["median"]   # 还原，避免影响后续断言
 
+# ---- 缩放自适应：窗口缩放后格子按新画布尺寸重排（用户反馈"缩放 GUI，
+# 热力图里的块没有自适应宽度"的直接回归）----
+meds_before = [c["median"] for c in app.cells]
+colors_before = [app.canvas_map.itemcget(it, "fill") for it in app.cell_items]
+old_grid = (app.cell_pitch, app.grid_cols, app.grid_rows)
+app.canvas_map.winfo_width = lambda: 760      # 模拟窗口缩小
+app.canvas_map.winfo_height = lambda: 420
+app._on_canvas_configure(None)                # 触发防抖重排
+t1 = time.time()
+while app._map_cfg_after and time.time() - t1 < 3:
+    app.update()
+    time.sleep(0.02)
+assert app._map_cfg_after is None, "缩放重排回调应已执行"
+assert (app.cell_pitch, app.grid_cols, app.grid_rows) != old_grid, \
+    "网格参数应随画布尺寸变化"
+# 所有格子矩形都落在新画布内（坐标已重排，没有留在旧位置的块）
+for it in app.cell_items:
+    x0, y0, x1, y1 = app.canvas_map.coords(it)
+    assert 0 <= x0 and x1 <= 761 and 0 <= y0 and y1 <= 421, (x0, y0, x1, y1)
+# 数据不动：中位数与填充色逐一比对（缩放是纯几何变化）
+assert [c["median"] for c in app.cells] == meds_before
+assert [app.canvas_map.itemcget(it, "fill")
+        for it in app.cell_items] == colors_before
+# 缩放后悬停仍按新网格定位到同一批格子
+_hover_cell(app, 255)
+hover_rz = app.lbl_hover.cget("text")
+print("缩放后悬停: %r" % hover_rz)
+assert "Cell #256/256" in hover_rz, hover_rz
+print("缩放自适应 OK：pitch %.1f→%.1f，网格 %d×%d → %d×%d"
+      % (old_grid[0], app.cell_pitch, old_grid[1], old_grid[2],
+         app.grid_cols, app.grid_rows))
+
 # 汇总文本含快速扫描覆盖率行（英文口径）
 txt = app.txt_summary.get("1.0", "end")
 assert "quick scan" in txt and "% of capacity" in txt
@@ -130,6 +166,7 @@ app.destroy()
 root.destroy()      # 连同隐藏 root 一起销毁：ttkbootstrap 的 Style 是进程级
                     # 单例，旧解释器还活着时新 Window 建不出主题对象
                     # （_theme_objects 为空 → KeyError），与 test_gui_stop 相同做法
+H.QUICK_DEFAULT_SEG = _QUICK_SEG_ORIG   # 还原默认（阶段二为全段扫描，不用它）
 
 # ---- 第二阶段：普通全段扫描（回归：_run_worker 曾在工作线程读 Tk 变量
 # 导致 "main thread is not in main loop"，快速/全段两条路径都要覆盖）----
@@ -143,15 +180,15 @@ app2.canvas_map.winfo_height = lambda: 700
 app2.update()
 app2.var_target.set(SMALL)
 app2.var_fio.set(FIO)
-app2.var_seg.set("4M")             # 8MB / 4M = 2 段
 app2.var_bs.set("1M")              # 显式块大小：8 块，断言确定
 app2.var_quick.set(False)
 app2._start_scan()
 assert app2.scan_quick is False
-# 固定格数：8MB 小盘同样 256 格（段少格多 → 2 段各覆盖 128 格，全部有数据）
+# 固定格数：8MB 小盘同样 256 格。默认分段 = ⌈8MB/256⌉ = 32KB < 块大小
+# 1M，plan_segments 退化为整盘一次：单段 (0, None) 覆盖全部 256 格
 assert len(app2.cells) == H.MAP_CELLS, len(app2.cells)
-assert app2.seg_cells[0] == list(range(0, 128)), app2.seg_cells[0][:3]
-assert app2.seg_cells[1] == list(range(128, 256)), app2.seg_cells[1][:3]
+assert len(app2.seg_cells) == 1, len(app2.seg_cells)
+assert app2.seg_cells[0] == list(range(0, 256)), app2.seg_cells[0][:3]
 t0 = time.time()
 while time.time() - t0 < 60:
     app2.update()
@@ -163,20 +200,20 @@ else:
 app2.update()
 s2 = app2.summary
 assert s2 and not s2.get("quick"), s2
-assert len(s2["segments"]) == 2
+assert len(s2["segments"]) == 1
 assert s2["n_blocks"] == 8, s2["n_blocks"]
-# 段少格多：2 段覆盖全部 256 格，每格 4 块（1M 块大小 / 4M 段）
+# 整盘一次：单段覆盖全部 256 格，每格 8 块（1M 块大小 / 8MB 盘）
 filled2 = sum(1 for c in app2.cells if c["median"] is not None)
 print("全段扫描: %d 段 %d 块 | 填充 %d/%d 格 | 耗时 %.1fs"
       % (len(s2["segments"]), s2["n_blocks"], filled2, len(app2.cells),
          s2["elapsed_s"]))
 assert filled2 == H.MAP_CELLS, filled2
-assert all(c["n"] == 4 for c in app2.cells), [c["n"] for c in app2.cells[:4]]
+assert all(c["n"] == 8 for c in app2.cells), [c["n"] for c in app2.cells[:4]]
 app2._on_canvas_motion(types.SimpleNamespace(
     x=int(app2.grid_ox + app2.cell_pitch / 2),
     y=int(app2.grid_oy + app2.cell_pitch / 2)))
 hover2 = app2.lbl_hover.cget("text")
-assert "Cell #1/256" in hover2 and "read 4 blocks" in hover2, hover2
+assert "Cell #1/256" in hover2 and "read 8 blocks" in hover2, hover2
 print("全段扫描悬停: %r" % hover2)
 app2._cancel_timers()
 app2.destroy()

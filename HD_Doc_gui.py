@@ -175,6 +175,8 @@ class HDDocApp(ttk.Window):
         self.cell_span = []         # 每格字节范围 (start, end|None)，悬停显示
         self.seg_cells = []         # 每段覆盖的格下标列表（聚合映射）
         self.cell_region = []       # 每格由哪个段/区域供数（悬停显示抽样上下文）
+        self._map_wh = None         # 上次布局采用的画布尺寸（缩放事件去重）
+        self._map_cfg_after = None  # 挂起的 <Configure> 防抖回调（退出时取消）
         self._err_seen = set()      # 已计入热力图的错误块（事件/汇总去重）
         self.total_size = None
         self.planned_bytes = 0   # 快速扫描的计划读取量（进度/ETA 分母）
@@ -376,7 +378,7 @@ class HDDocApp(ttk.Window):
 
         流程：快照当前可见状态 → 销毁全部子控件与菜单 → 重建 → 恢复。
         跨重建保留的：
-          - 各下拉/输入框的当前选择（本地化列表如块大小/段大小按
+          - 各下拉/输入框的当前选择（本地化列表如块大小按
             下标恢复，避免"自动"↔"Auto"对不上）；
           - 结构化日志（按新语言重放）与横幅（按键+参数重放）；
           - 已完成的扫描结果（热力图数据 + 汇总页 + 错误树）；
@@ -393,7 +395,6 @@ class HDDocApp(ttk.Window):
             "bs_idx": self.combo_bs.current(),
             "engine": self.var_engine.get(),
             "direct": bool(self.var_direct.get()),
-            "seg_idx": self.combo_seg.current(),
             "quick": bool(self.var_quick.get()),
             "sample_idx": self.combo_quick_sample.current(),
             "fio": self.var_fio.get(),
@@ -434,8 +435,6 @@ class HDDocApp(ttk.Window):
             self.combo_bs.current(snap["bs_idx"])
         self.var_engine.set(snap["engine"])
         self.var_direct.set(snap["direct"])
-        if snap["seg_idx"] >= 0:
-            self.combo_seg.current(snap["seg_idx"])
         self.var_quick.set(snap["quick"])
         self._on_quick_toggle()
         if snap["sample_idx"] >= 0:
@@ -522,13 +521,8 @@ class HDDocApp(ttk.Window):
         self.var_direct = tk.BooleanVar(value=True)
         self._reg(ttk.Checkbutton(row1, variable=self.var_direct),
                   "gui.direct").pack(side="left")
-        self._reg(ttk.Label(row1), "gui.segment").pack(side="left", padx=(14, 0))
-        self.var_seg = tk.StringVar(value="4G")
-        self.combo_seg = self._reg_values(
-            ttk.Combobox(row1, textvariable=self.var_seg, width=22,
-                         state="readonly"),
-            "gui.seg_values")
-        self.combo_seg.pack(side="left")
+        # 分段大小不再提供选择：全段扫描默认按热力图格数（MAP_CELLS）
+        # 均分（一段≈一格），见 _start_scan 的 default_segment_bytes
         self.var_quick = tk.BooleanVar(value=False)
         self._reg(ttk.Checkbutton(row1, variable=self.var_quick,
                                   command=self._on_quick_toggle),
@@ -585,6 +579,8 @@ class HDDocApp(ttk.Window):
         self.canvas_map.pack(fill="both", expand=True, padx=4, pady=4)
         self.canvas_map.bind("<Motion>", self._on_canvas_motion)
         self.canvas_map.bind("<Leave>", lambda e: self.lbl_hover.config(text=""))
+        # 窗口缩放/DPI 变化：格子按新画布尺寸重排（只挪坐标，不动数据）
+        self.canvas_map.bind("<Configure>", self._on_canvas_configure)
 
         legend = ttk.Frame(map_frame)
         legend.pack(fill="x", padx=4)
@@ -964,7 +960,8 @@ class HDDocApp(ttk.Window):
     def _cancel_timers(self):
         """取消挂起的 after 回调，避免销毁后 Tcl 报
         “invalid command name …”（提权重启/关闭路径的退出噪声）"""
-        for attr in ("_poll_after", "_admin_after", "_pkexec_after"):
+        for attr in ("_poll_after", "_admin_after", "_pkexec_after",
+                     "_map_cfg_after"):
             try:
                 after_id = getattr(self, attr, None)
                 if after_id:
@@ -1028,9 +1025,12 @@ class HDDocApp(ttk.Window):
             bs = clamp_bs(bs, size)
             self._log("warn", "gui.log.bs_clamped", sz=fmt_bytes(bs))
         quick = bool(self.var_quick.get())
-        seg_bytes = parse_segment_size(self.var_seg.get())
-        seg_requested = seg_bytes is not None
-        if not size and seg_requested:
+        # 分段大小不再手工可选：全段扫描默认按热力图格数均分（一段≈一格，
+        # 段统计与格一一对应）；容量未知时 seg_bytes=None，走"整盘一次"
+        # 降级。快速扫描不跟随格数——小盘会被 128 区 × 区头样本读完整盘，
+        # 失去"快速"意义，保持 4G 区域默认（<4G 整盘一区只读区头样本）。
+        seg_bytes = default_segment_bytes(size)
+        if not size:
             # 不弹窗：降级模式说明进日志与横幅，直接继续
             self._log("warn", "gui.log.no_size_degraded", t=target)
             self._banner("gui.log.no_size_degraded", "warn", t=target)
@@ -1038,7 +1038,8 @@ class HDDocApp(ttk.Window):
         if quick:
             if size:
                 bs, segments, quick_sample = quick_scan_setup(
-                    size, bs, seg_bytes, parse_bs(self.var_quick_sample.get()))
+                    size, bs, QUICK_DEFAULT_SEG,
+                    parse_bs(self.var_quick_sample.get()))
                 self._log("info", "gui.log.quick_plan",
                           n=len(segments), sample=fmt_bytes(quick_sample),
                           total=fmt_bytes(sum(s for _o, s in segments if s)),
@@ -1175,6 +1176,7 @@ class HDDocApp(ttk.Window):
         self.seg_meta = list(seg_meta) if seg_meta else []
         self.n_cells = MAP_CELLS
         pitch, cols, rows, ox, oy = plan_grid(w, h, self.n_cells)
+        self._map_wh = (w, h)       # 记录本次布局的画布尺寸（<Configure> 去重）
         self.cell_pitch = pitch
         self.grid_cols = cols
         self.grid_rows = rows
@@ -1214,6 +1216,51 @@ class HDDocApp(ttk.Window):
                 if self.cell_region[c] is None:
                     self.cell_region[c] = i
         self.dirty.clear()
+
+    def _on_canvas_configure(self, ev=None):
+        """画布尺寸变化（窗口缩放/最大化/DPI 变化/语言重建后重映射）：
+        拖拽缩放会连续触发 Configure，用 50ms 防抖合并成一次重排。"""
+        if self._map_cfg_after is not None:
+            return                  # 已挂起：等它跑（顺带覆盖最新尺寸）
+        self._map_cfg_after = self.after(50, self._flush_canvas_configure)
+
+    def _flush_canvas_configure(self):
+        self._map_cfg_after = None
+        # 窗口已销毁（提权重启/关闭路径）时安静退出，避免 Tcl 报
+        # “invalid command name”（与 _poll_queue 同款防御）
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        self._relayout_map()
+
+    def _relayout_map(self):
+        """按当前画布尺寸重排热力图格子（窗口缩放自适应）。
+
+        只更新格子矩形的坐标与网格参数（cell_pitch/grid_cols/grid_rows/
+        grid_ox/grid_oy），格子的统计数据、颜色、错误数全部不动——缩放
+        是纯几何变化。无格子（未扫描）或尺寸没变时直接返回。
+        """
+        if not self.cell_items:
+            return
+        w = max(100, self.canvas_map.winfo_width())
+        h = max(100, self.canvas_map.winfo_height())
+        if self._map_wh == (w, h):
+            return
+        self._map_wh = (w, h)
+        pitch, cols, rows, ox, oy = plan_grid(w, h, self.n_cells or MAP_CELLS)
+        self.cell_pitch = pitch
+        self.grid_cols = cols
+        self.grid_rows = rows
+        self.grid_ox = ox
+        self.grid_oy = oy
+        cell = max(CELL_SIZE_MIN, int(pitch) - CELL_GAP)
+        for i, item in enumerate(self.cell_items):
+            r, c = divmod(i, cols)   # 行优先：与 _reset_map 一致
+            x = ox + c * pitch
+            y = oy + r * pitch
+            self.canvas_map.coords(item, x, y, x + cell, y + cell)
 
     def _add_seg_stat(self, cell_idx, ev):
         """把一段的统计聚合进格：parts 累积 (median, max, n_blocks)，格中位数

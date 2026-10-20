@@ -76,8 +76,10 @@ def build_parser():
                          "or an image file path")
     ap.add_argument("--bs", default="auto",
                     help="block size, e.g. 4M / 512K / auto (default: auto)")
-    ap.add_argument("--segment-gb", type=float, default=4.0,
-                    help="segment size in GB; 0 = whole disk at once (default: 4)")
+    ap.add_argument("--segment-gb", type=float, default=None,
+                    help="segment size in GB; 0 = whole disk at once; "
+                         "unset = auto (divide by heatmap cell count, 256; "
+                         "quick scan uses 4G regions)")
     ap.add_argument("--quick", action="store_true",
                     help="quick scan (HD Tune Quick Scan style): read only the head "
                          "sample of each region and skip the rest")
