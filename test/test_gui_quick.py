@@ -142,6 +142,35 @@ print("缩放自适应 OK：pitch %.1f→%.1f，网格 %d×%d → %d×%d"
       % (old_grid[0], app.cell_pitch, old_grid[1], old_grid[2],
          app.grid_cols, app.grid_rows))
 
+# ---- 双模式切换：健康（绿/红）与速度（绿/黄/红）即时重上色 ----
+# 白盒注入一个错误格和一个超阈值慢格，验证两种模式的着色语义差异
+app.cells[7]["errors"] = 1                 # 读取错误 → 两种模式都红
+app.cells[10]["median"] = 10 ** 9          # 远超阈值的延迟
+app.cells[10]["max"] = 10 ** 9
+# 健康模式：错误格红；慢格绿（读得慢但不是错误，健康只有绿/红两色）
+app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app._on_map_mode_toggle()
+assert app.canvas_map.itemcget(app.cell_items[7], "fill") == H.COLOR_ERROR
+assert app.canvas_map.itemcget(app.cell_items[10], "fill") == H.COLOR_OK
+assert app.canvas_map.itemcget(app.cell_items[0], "fill") == H.COLOR_OK
+assert app._legend_labels[1][0].winfo_manager() == "", \
+    "健康模式图例不应有'偏慢'"
+# 速度模式：错误格仍红；慢格变黄；正常格绿；图例补回"偏慢"
+app.combo_map_mode.current(H.MAP_MODE_SPEED)
+app._on_map_mode_toggle()
+assert app.canvas_map.itemcget(app.cell_items[7], "fill") == H.COLOR_ERROR
+assert app.canvas_map.itemcget(app.cell_items[10], "fill") == H.COLOR_SLOW
+assert app.canvas_map.itemcget(app.cell_items[0], "fill") == H.COLOR_OK
+assert app._legend_labels[1][0].winfo_manager() == "pack"
+assert "read speed" in app.map_frame.cget("text").lower()
+# 还原注入并切回健康模式（不影响后续导出断言）
+app.cells[7]["errors"] = 0
+app.cells[10]["median"] = app.cells[9]["median"]
+app.cells[10]["max"] = app.cells[9]["max"]
+app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app._on_map_mode_toggle()
+print("双模式切换 OK：健康=绿/红（慢格也绿），速度=绿/黄/红")
+
 # 汇总文本含快速扫描覆盖率行（英文口径）
 txt = app.txt_summary.get("1.0", "end")
 assert "quick scan" in txt and "% of capacity" in txt

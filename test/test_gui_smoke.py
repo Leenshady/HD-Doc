@@ -59,6 +59,37 @@ assert app.combo_bs["values"][0] == "Auto", app.combo_bs["values"]
 # 分段下拉已移除：默认按热力图格数分段（GUI 不再暴露分段大小选择）
 assert not hasattr(app, "combo_seg"), "segment dropdown must be removed"
 
+# ---- 热力图双模式（默认健康；可切速度）----
+assert app.combo_map_mode["values"] == ("Disk health", "Read speed"), \
+    app.combo_map_mode["values"]
+assert app.var_map_mode.get() == "Disk health"
+assert app.map_mode == H.MAP_MODE_HEALTH
+assert "health" in app.map_frame.cget("text").lower(), app.map_frame.cget("text")
+# 健康模式图例：正常/错误/未扫描可见，"偏慢"隐藏（winfo_manager 空=未 pack）
+assert app._legend_labels[1][0].winfo_manager() == "", \
+    "slow swatch must be hidden in health mode"
+assert app._legend_labels[0][0].winfo_manager() == "pack"
+assert app._legend_labels[2][0].winfo_manager() == "pack"
+assert app._legend_labels[3][0].winfo_manager() == "pack"
+# 切到速度模式：图例补回"偏慢"，标题换口径
+# （注：测试环境的隐藏 root 与 app 是两个 Tcl 解释器，控件→StringVar
+#  的回写不跨解释器；处理函数读控件下标、断言也按控件值，真实单窗口
+#  应用里两者始终一致）
+app.combo_map_mode.current(H.MAP_MODE_SPEED)
+app._on_map_mode_toggle()
+assert app.map_mode == H.MAP_MODE_SPEED
+assert app.combo_map_mode.get() == "Read speed"
+assert "read speed" in app.map_frame.cget("text").lower()
+assert app._legend_labels[1][0].winfo_manager() == "pack"
+# 切回健康模式（往返一致）
+app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app._on_map_mode_toggle()
+assert app.map_mode == H.MAP_MODE_HEALTH
+assert app.combo_map_mode.get() == "Disk health"
+assert app._legend_labels[1][0].winfo_manager() == ""
+# 无扫描数据时切换不报错（cells 空 → 只更新标题/图例）
+assert app.cells == []
+
 # ---- 目标下拉框禁止编辑 ----
 assert str(app.combo_target.cget("state")) == "readonly", \
     "target dropdown must not be editable"
@@ -229,6 +260,8 @@ live = _LiveWorker()
 app.summary = None                      # 模拟"扫描进行中、尚无结果"
 app._set_state("gui.state_scanning")    # 与 _start_scan 同一入口
 app.worker = live
+app.combo_map_mode.current(H.MAP_MODE_SPEED)   # 重建前切到速度模式
+app._on_map_mode_toggle()
 app._set_language("zh")
 app.update()
 assert core.get_language() == "zh"
@@ -240,6 +273,10 @@ assert str(app.btn_start.cget("state")) == "disabled", "start stays disabled"
 assert str(app.btn_stop.cget("state")) == "normal", "stop stays enabled"
 assert app.worker is live, "rebuild must not touch the scan thread"
 assert app.lbl_state.cget("text") == "扫描中…", app.lbl_state.cget("text")
+# 热力图模式跨重建保留（快照下标恢复；格子颜色由地图块按新模式重绘）
+assert app.map_mode == H.MAP_MODE_SPEED, "heatmap mode must survive rebuild"
+assert app.combo_map_mode.get() == "磁盘读取速度热力图", \
+    app.combo_map_mode.get()
 # 热力图数据跨重建保留（格数固定 256；错误块经 live 事件与汇总去重后
 # cell67 errors=1，不重复计数）
 assert len(app.cells) == H.MAP_CELLS, len(app.cells)
@@ -258,6 +295,8 @@ app._set_language("en")                 # zh → en 反向切换
 app.update()
 assert core.get_language() == "en"
 assert app.btn_start.cget("text") == "Start scan"
+assert app.map_mode == H.MAP_MODE_SPEED, "mode survives zh→en rebuild too"
+assert app.combo_map_mode.get() == "Read speed"
 assert "Block size" in app.txt_summary.get("1.0", "end"), \
     "summary page must be re-rendered in the new language"
 assert "Scan complete" in app.lbl_banner.cget("text"), \
@@ -266,7 +305,9 @@ assert app.nb.select() == str(app.txt_summary), "selected tab must be kept"
 assert len(app.cells) == H.MAP_CELLS and app.cells[67]["errors"] == 1
 app._set_language("en")
 assert app.btn_start.cget("text") == "Start scan", "same language is a no-op"
-# 还原空闲态按钮（后续用例不关心，保持界面自洽）
+# 还原空闲态与默认模式（后续用例不关心，保持界面自洽）
+app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app._on_map_mode_toggle()
 app.btn_start.config(state="normal")
 app.btn_stop.config(state="disabled")
 print("Language switch OK (in-place rebuild; results/log/banner replayed)")

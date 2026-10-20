@@ -56,6 +56,15 @@ STATE_BOOTSTYLE = {"gui.state_ready": "secondary",
                    "gui.state_done_aborted": "success",
                    "gui.state_failed": "danger"}
 
+# 热力图双模式（下拉选项顺序即下标语义，跨语言稳定）：
+#   健康模式——只按"有没有读取错误"判定：绿=正常、红=读取错误
+#     （HD Tune 错误扫描同语义；读得慢但不是错误，健康判定只有两色）；
+#   速度模式——按读取延迟判定：绿=快、黄=偏慢、红=读取错误。
+# 两种模式共用灰色表示"未扫描/未抽样"——无数据不是健康/速度判定，
+# 不显示灰色会把未扫区域误读成"健康"。
+MAP_MODE_HEALTH = 0
+MAP_MODE_SPEED = 1
+
 
 def _resource_dir():
     """img/ 资源目录：打包版在 sys._MEIPASS，源码版在脚本同级"""
@@ -201,6 +210,10 @@ class HDDocApp(ttk.Window):
         # 见 _set_language / _set_theme / _rebuild_ui）
         self.var_lang = tk.StringVar(value=get_language())
         self.var_theme = tk.StringVar(value=get_theme())
+
+        # 热力图模式（健康/读取速度）：_build_ui 建下拉前就绪，
+        # 切换语言重建界面时按快照下标恢复（见 _rebuild_ui）
+        self.map_mode = MAP_MODE_HEALTH
 
         self._setup_theme()
         self._set_window_icon()
@@ -397,6 +410,7 @@ class HDDocApp(ttk.Window):
             "direct": bool(self.var_direct.get()),
             "quick": bool(self.var_quick.get()),
             "sample_idx": self.combo_quick_sample.current(),
+            "map_mode_idx": self.combo_map_mode.current(),
             "fio": self.var_fio.get(),
             "tab": self.nb.index("current"),
             "progress": self.progress["value"],
@@ -439,6 +453,12 @@ class HDDocApp(ttk.Window):
         self._on_quick_toggle()
         if snap["sample_idx"] >= 0:
             self.combo_quick_sample.current(snap["sample_idx"])
+        # 热力图模式：先恢复下标与 self.map_mode（后面的热力图数据重载
+        # _redraw_cells 要按新模式上色），此时不重绘（cell_items 还是旧
+        # 画布的 id，地图块随后会以新 items 正确上色）
+        if snap["map_mode_idx"] >= 0:
+            self.combo_map_mode.current(snap["map_mode_idx"])
+        self._on_map_mode_toggle(redraw=False)
         self.var_fio.set(snap["fio"])
         self._render_log()
         self._render_banner()
@@ -534,6 +554,17 @@ class HDDocApp(ttk.Window):
             values=tr_list("gui.sample_values"))
         self.combo_quick_sample.pack(side="left")
         self.combo_quick_sample.config(state="disabled")
+        # 热力图模式（健康/读取速度）：显示选项，与扫描参数同行排放
+        self._reg(ttk.Label(row1), "gui.map_mode").pack(side="left",
+                                                        padx=(14, 0))
+        self.var_map_mode = tk.StringVar(value=tr_list("gui.map_mode_values")[0])
+        self.combo_map_mode = self._reg_values(
+            ttk.Combobox(row1, textvariable=self.var_map_mode, width=20,
+                         state="readonly"),
+            "gui.map_mode_values")
+        self.combo_map_mode.pack(side="left")
+        self.combo_map_mode.bind("<<ComboboxSelected>>",
+                                 self._on_map_mode_toggle)
 
         self._reg(ttk.Label(bar), "gui.fio_path").grid(row=2, column=0,
                                                        sticky="w", pady=(4, 0))
@@ -572,35 +603,38 @@ class HDDocApp(ttk.Window):
         bar.columnconfigure(1, weight=1)
 
         # ---- 热力图 ----
-        map_frame = self._reg(ttk.LabelFrame(self, padding=(8, 6, 8, 6)),
-                              "gui.map_title", n=MAP_CELLS)
-        map_frame.pack(fill="both", expand=True, padx=8, pady=4)
-        self.canvas_map = tk.Canvas(map_frame, bg=colors.bg, highlightthickness=0)
+        # 标题文案随模式切换（_update_map_title），不占 _reg 的静态键
+        self.map_frame = ttk.LabelFrame(self, padding=(8, 6, 8, 6))
+        self._update_map_title()
+        self.map_frame.pack(fill="both", expand=True, padx=8, pady=4)
+        self.canvas_map = tk.Canvas(self.map_frame, bg=colors.bg,
+                                    highlightthickness=0)
         self.canvas_map.pack(fill="both", expand=True, padx=4, pady=4)
         self.canvas_map.bind("<Motion>", self._on_canvas_motion)
         self.canvas_map.bind("<Leave>", lambda e: self.lbl_hover.config(text=""))
         # 窗口缩放/DPI 变化：格子按新画布尺寸重排（只挪坐标，不动数据）
         self.canvas_map.bind("<Configure>", self._on_canvas_configure)
 
-        legend = ttk.Frame(map_frame)
+        legend = ttk.Frame(self.map_frame)
         legend.pack(fill="x", padx=4)
         self.lbl_hover = ttk.Label(legend, text="", anchor="w",
                                    bootstyle="secondary")
         self.lbl_hover.pack(side="left", fill="x", expand=True)
         self._legend_labels = []
         self._legend_swatches = []   # 原生 tk 色块：切主题时手工同步边框色
+        # 四个语义色全部建好，按模式显隐（_layout_legend）：健康模式只留
+        # 绿/红/灰，速度模式 绿/黄/红/灰
         for color, key in ((COLOR_OK, "ok"), (COLOR_SLOW, "slow"),
                            (COLOR_ERROR, "error"),
                            (COLOR_PENDING, "pending")):
             swatch = tk.Frame(legend, bg=color, width=12, height=12,
                               highlightbackground=colors.border,
                               highlightthickness=1)
-            swatch.pack(side="left", padx=(8, 2))
             self._legend_swatches.append(swatch)
             lbl = ttk.Label(legend, text=status_text(key),
                             bootstyle="secondary")
-            lbl.pack(side="left")
             self._legend_labels.append((lbl, key))
+        self._layout_legend()
 
         # ---- 状态行 ----
         st = ttk.Frame(self)
@@ -1262,6 +1296,54 @@ class HDDocApp(ttk.Window):
             y = oy + r * pitch
             self.canvas_map.coords(item, x, y, x + cell, y + cell)
 
+    def _update_map_title(self):
+        """热力图标题随模式切换（LabelFrame 文本）"""
+        key = ("gui.map_title_health" if self.map_mode == MAP_MODE_HEALTH
+               else "gui.map_title_speed")
+        self.map_frame.config(text=tr(key, n=MAP_CELLS))
+
+    def _layout_legend(self):
+        """图例按模式显隐重排：健康模式只留 绿(正常)/红(错误)/灰(未扫描)，
+        速度模式 绿(快)/黄(偏慢)/红(错误)/灰(未扫描)。
+
+        灰色两种模式都保留：未扫描/未抽样不是健康或速度判定，藏掉灰色
+        会把"还没扫到"误读成"正常"。下标对应创建顺序
+        0=ok 1=slow 2=error 3=pending（_legend_swatches/_legend_labels）。
+        先全部收起再按需 pack——否则从速度模式切回健康时"偏慢"会残留。
+        """
+        for swatch, lbl in zip(self._legend_swatches,
+                               (l for l, _k in self._legend_labels)):
+            swatch.pack_forget()
+            lbl.pack_forget()
+        order = ((0, 2, 3) if self.map_mode == MAP_MODE_HEALTH
+                 else (0, 1, 2, 3))
+        for i in order:
+            self._legend_swatches[i].pack(side="left", padx=(8, 2))
+            self._legend_labels[i][0].pack(side="left")
+
+    def _on_map_mode_toggle(self, _ev=None, redraw=True):
+        """切换热力图模式（健康 ↔ 读取速度）：标题与图例即时更新，
+        格子按新模式重上色——已完成→立即全量重绘；扫描中→全部标记脏，
+        下一拍 _flush_cells 随 provisional 阈值统一上色（避免用过程阈值
+        把中间态定格）。数据（中位数/错误数/块数）与模式无关，不重算。
+
+        redraw=False 供界面重建（_rebuild_ui）用：彼时 cell_items 还是
+        已销毁画布的旧 id，重绘无意义；随后的地图数据重载会以新 items
+        按新模式上色。
+        """
+        self.map_mode = self.combo_map_mode.current()
+        if self.map_mode < 0:      # 防御：选择被清空时回到健康模式
+            self.map_mode = MAP_MODE_HEALTH
+            self.combo_map_mode.current(MAP_MODE_HEALTH)
+        self._update_map_title()
+        self._layout_legend()
+        if not redraw or not self.cells:
+            return
+        if self.summary is not None:
+            self._redraw_cells()
+        else:
+            self.dirty = set(range(len(self.cells)))
+
     def _add_seg_stat(self, cell_idx, ev):
         """把一段的统计聚合进格：parts 累积 (median, max, n_blocks)，格中位数
         按块数加权、max 取最大、块数求和。一段跨多格时每格都计入该段。"""
@@ -1279,15 +1361,21 @@ class HDDocApp(ttk.Window):
         c["max"] = max(maxes) if maxes else None
         self.dirty.add(cell_idx)
 
-    def _cell_color(self, idx, slow_thr):
+    def _cell_color(self, idx):
+        """格子填充色（双模式，见 MAP_MODE_* 注释）：
+        - 读取错误：两种模式都是红（最高优先级，盖过延迟颜色）；
+        - 健康模式：无错误即绿——读得慢但不是错误，健康判定只有绿/红；
+        - 速度模式：延迟超当前阈值→黄，否则→绿；
+        - 无数据（未扫描/未抽样）：两种模式都是灰——不是判定结果。
+        """
         c = self.cells[idx]
         if c["errors"] > 0:
             return COLOR_ERROR
         if c["median"] is None:
             return COLOR_PENDING
-        if c["median"] > slow_thr:
-            return COLOR_SLOW
-        return COLOR_OK
+        if self.map_mode == MAP_MODE_HEALTH:
+            return COLOR_OK
+        return COLOR_SLOW if c["median"] > self.thresholds else COLOR_OK
 
     def _flush_cells(self, force=False):
         now = time.time()
@@ -1296,20 +1384,20 @@ class HDDocApp(ttk.Window):
         self._last_flush = now
         if not self.dirty:
             return
-        # 周期性用全体格中位数重算 provisional 阈值
+        # 周期性用全体格中位数重算 provisional 阈值（速度模式用；
+        # 健康模式不按延迟判定，算了也不用，无害且模式随时可切）
         if now - self._last_thresh_calc > 0.5:
             self._last_thresh_calc = now
             meds = [c["median"] for c in self.cells if c["median"] is not None]
             if meds:
                 med = statistics.median(meds)
                 self.thresholds = max(med * 3.0, 10000.0)
-        slow_thr = self.thresholds
         items = self.canvas_map
         batch = list(self.dirty)[:4000]
         for idx in batch:
             if idx < len(self.cell_items) and self.cell_items[idx]:
                 items.itemconfig(self.cell_items[idx],
-                                 fill=self._cell_color(idx, slow_thr))
+                                 fill=self._cell_color(idx))
         self.dirty.clear()
 
     # ---------------------------------------------------------- 事件处理
@@ -1451,12 +1539,11 @@ class HDDocApp(ttk.Window):
                bool(s.get("stop_requested")), s["elapsed_s"]))
 
     def _redraw_cells(self):
-        """用当前阈值全量重绘热力图（最终阈值/重建界面后调用）"""
-        slow_thr = self.thresholds
+        """用当前模式与阈值全量重绘热力图（最终阈值/重建界面/切换模式后调用）"""
         for i in range(len(self.cells)):
             if i < len(self.cell_items) and self.cell_items[i]:
                 self.canvas_map.itemconfig(self.cell_items[i],
-                                           fill=self._cell_color(i, slow_thr))
+                                           fill=self._cell_color(i))
 
     def _render_result_ui(self, s):
         """渲染已完成扫描的结果区（状态行/导出按钮/错误树/汇总页/横幅）。
