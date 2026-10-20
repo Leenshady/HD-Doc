@@ -71,12 +71,16 @@ ABOUT_ICON_PX = 48
 def _bounded_photo(img, max_px=ABOUT_ICON_PX):
     """PhotoImage 等比缩到 max_px 以内。
 
-    PhotoImage 只有 subsample（整数倍点采样）可用、且运行时无 PIL 依赖，
-    这里向下取整到整数倍；原图任一边已不超上限时原样返回（避免多余拷贝）。
+    PhotoImage 只有 subsample（整数倍点采样）可用、且运行时无 PIL 依赖。
+    subsample 的结果尺寸是向上取整（如 1024/21→49），所以因子必须按
+    向上取整算：factor = ceil(长边/max_px)，否则原图边长不是 max_px
+    整数倍时会超出上限（1024 主图按 // 算得 21 → 49px > 48）。
+    原图任一边已不超上限时原样返回（避免多余拷贝）。
     """
-    factor = max(1, max(img.width(), img.height()) // max_px)
-    if factor == 1:
+    long_edge = max(img.width(), img.height())
+    if long_edge <= max_px:
         return img
+    factor = -(-long_edge // max_px)          # ceil 除法
     return img.subsample(factor, factor)
 
 
@@ -84,36 +88,64 @@ def ensure_admin_at_startup():
     """GUI 启动即申请管理员权限（入口 HD_Doc.py 在创建窗口前调用）。
 
     设计取舍：不在程序跑起来以后再弹"是否重启为管理员"的对话框——
-    UAC 确认本身就是那个询问。非管理员且允许自动提权时直接发起
-    runas 提权重启：
-      - UAC 确认 → 提权进程已启动，返回 True，调用方应退出本进程
+    UAC/pkexec 确认本身就是那个询问。非管理员且允许自动提权时直接发起
+    提权重启：
+      - 授权确认 → 提权进程已启动，返回 True，调用方应退出本进程
         （窗口都不会创建，不存在"先闪一下再提权"）；
-      - UAC 取消 → 返回 False，以标准权限继续运行（扫镜像文件、
+      - 授权取消 → 返回 False，以标准权限继续运行（扫镜像文件、
         刷新磁盘列表都不需要管理员；物理盘扫描入口还会再提权）。
     --no-elevate / HDTUNE_NO_AUTO_ELEVATE=1 关闭自动提权时直接返回
     False（照常启动，界面保留"以管理员重启"按钮）。
 
-    Linux/其他平台没有 UAC，此处直接放行：启动日志与界面提示会指引
-    sudo / pkexec 路线（见 _startup_admin_check 与 gui.log.not_admin_linux）；
-    root 已运行时 is_admin() 为 True，同样直接放行。
+    平台差异：Windows 用 ShellExecuteEx("runas")，取消时同步返回错误、
+    立刻可知；Linux 没有 UAC，用 pkexec 异步启动（授权期间 pkexec 一直
+    存活），因此这里轮询约 2.5 秒：pkexec 很快退出 = 授权被取消或
+    pkexec 不可用 → 保持标准权限继续启动（Ubuntu 桌面图标点击时同样
+    会弹 polkit 密码框，与 Windows 的 UAC 体验一致）。
     """
-    if is_admin() or not IS_WIN or not auto_elevate_enabled():
+    if is_admin() or not auto_elevate_enabled():
         return False
-    print("[Elevate] Not running as administrator; requesting elevation (UAC)...")
-    ok, _code, err = request_elevation(wait=False, gui=True)
-    if ok:
-        print("[Elevate] Elevated instance started; exiting this process.")
+    if IS_WIN:
+        print("[Elevate] Not running as administrator; requesting elevation (UAC)...")
+        ok, _code, err = request_elevation(wait=False, gui=True)
+        if ok:
+            print("[Elevate] Elevated instance started; exiting this process.")
+            return True
+        # UAC 被取消或启动失败：不退出程序，继续标准权限运行
+        print("[Elevate] Elevation not granted (%s); continuing unelevated."
+              % (err or "unknown"))
+        return False
+    # ---- Linux / 其他平台：pkexec 图形授权 ----
+    popen, err = core.pkexec_gui_spawn()
+    if popen is None:
+        # 已是 root（err=None）或 pkexec 不可用：不阻塞启动
+        print("[Elevate] pkexec unavailable (%s); starting unelevated."
+              % (err or "already root"))
+        core.log_event("startup: pkexec unavailable (%s)" % (err or "root"))
+        return False
+    core.log_event("startup: pkexec elevation requested (pid=%s)" % popen.pid)
+    deadline = time.monotonic() + 2.5
+    while time.monotonic() < deadline and popen.poll() is None:
+        time.sleep(0.1)
+    if popen.poll() is None:
+        # 授权进行中或提权实例已启动：本进程退出，让提权实例接管
+        print("[Elevate] Authorization in progress / elevated instance started;"
+              " exiting this process.")
         return True
-    # UAC 被取消或启动失败：不退出程序，继续标准权限运行
-    print("[Elevate] Elevation not granted (%s); continuing unelevated."
-          % (err or "unknown"))
+    code = popen.returncode
+    print("[Elevate] pkexec exited with %s (authorization cancelled or failed);"
+          " continuing unelevated." % code)
+    core.log_event("startup: pkexec exited rc=%s; continuing unelevated" % code)
     return False
 
 
 class HDDocApp(ttk.Window):
     def __init__(self):
         # 主题来自持久化偏好（见 HD_Doc_core 的 get_theme/set_theme）
-        super().__init__(themename=get_theme())
+        # className="HD_Doc"：设置 WM_CLASS 的 res_class，GNOME/KDE 据此把
+        # 运行中的窗口匹配到 .desktop 文件（配合 StartupWMClass），否则程序
+        # 坞里会显示默认的齿轮状兜底图标而不是应用图标（用户反馈）
+        super().__init__(themename=get_theme(), className="HD_Doc")
         self.withdraw()               # 构建期不显示，避免默认位置闪一下
         self.title(tr("gui.title", ver=VERSION))
         self.geometry("1140x820")
@@ -122,6 +154,11 @@ class HDDocApp(ttk.Window):
         self._target_paths = {}       # 下拉标签 → 裸设备路径（型号显示用）
         self._icon_img = None         # PhotoImage 引用，防止被 GC
         self._about_icon = None       # 弹窗内小图标（_bounded_photo 缩放版）
+        # pkexec 提权轮询（Linux）：_relaunch_elevated 发起后用 after 链
+        # 观察子进程存活——授权取消/失败时 pkexec 很快退出，此时必须保留
+        # 本窗口并提示，不能像旧版那样 200ms 后无条件退出（表现为"闪退"）
+        self._pkexec_popen = None
+        self._pkexec_polls = 0
 
         self.q = queue.Queue()
         self.scanner = None
@@ -727,7 +764,14 @@ class HDDocApp(ttk.Window):
         values, seen = [], {}
         for d in list_drives():
             model = (d["model"] or "").strip()
-            name = model or tr("gui.disk_n", n=d["index"])
+            if model:
+                name = model
+            elif not IS_WIN and d.get("path"):
+                # Linux 无型号信息时显示内核设备名（sda/nvme0n1），
+                # 比"Disk N"更可识别；Windows 侧保持 Disk N 兜底
+                name = os.path.basename(d["path"])
+            else:
+                name = tr("gui.disk_n", n=d["index"])
             size = fmt_bytes(d["size"]) if d["size"] else ""
             label = "%s  —  %s" % (name, size) if size else name
             if label in seen:   # 同型号同容量（双盘）时加序号区分
@@ -827,16 +871,23 @@ class HDDocApp(ttk.Window):
             return
         self._log("warn", "gui.log.not_admin" if IS_WIN
                   else "gui.log.not_admin_linux")
-        # 提权已在启动时由入口 ensure_admin_at_startup 处理（UAC 在窗口
-        # 出现前弹出）。能运行到这里只有两种情况：用户在 UAC 选了"否"，
-        # 或用 --no-elevate / HDTUNE_NO_AUTO_ELEVATE=1 关闭了自动提权。
-        # 两者都保持标准权限继续运行，需要时点界面上的"以管理员重启"。
-        # （Linux 没有 UAC：ensure_admin_at_startup 直接放行，这里统一
-        #  指引 sudo / pkexec 路线；启动时的自动提权只发生在 Windows。）
+        # 提权已在启动时由入口 ensure_admin_at_startup 处理：Windows 弹
+        # UAC、Linux 弹 pkexec 授权框（都在窗口出现前）。能运行到这里只有
+        # 三种情况：授权被取消、--no-elevate / HDTUNE_NO_AUTO_ELEVATE=1
+        # 关闭了自动提权、或 pkexec 不可用。都保持标准权限继续运行，需要
+        # 时点界面上的"以管理员/root 重启"按钮（Linux 见 pkexec_gui_spawn）。
+        if not IS_WIN:
+            self._banner("gui.log.not_admin_linux", "warn")
 
     def _relaunch_elevated(self):
-        # gui=True：Windows 提权子进程用 pythonw.exe 启动，不再伴随命令窗口；
-        # Linux 走 pkexec 异步启动（无 tty，同步 sudo 会卡死界面）
+        # gui=True：Windows 提权子进程用 pythonw.exe 启动，不再伴随命令窗口
+        # （ShellExecuteEx 同步返回，UAC 取消时 ok=False，窗口保留）；
+        # Linux 走 pkexec 异步启动，必须轮询子进程存活来判断授权成败——
+        # 旧版无条件 after(200, 退出)，授权被取消时窗口直接消失且没有任何
+        # 提示，用户看到的就是"点扫描闪退"
+        if not IS_WIN:
+            self._relaunch_elevated_linux()
+            return
         ok, _code, err = request_elevation(wait=False, gui=True)
         if not ok:
             self._banner("gui.msg.elevate_failed", "error", err=err or "?")
@@ -847,6 +898,59 @@ class HDDocApp(ttk.Window):
         self._log("info", "gui.log.elevate_requested")
         core.log_event("elevate: requesting administrator relaunch (gui=True)")
         self.after(200, self._exit_now)
+
+    def _relaunch_elevated_linux(self):
+        """Linux pkexec 提权：发起 → 横幅告知等待授权 → 轮询子进程。
+
+        判定规则（pkexec 语义）：授权期间 pkexec 一直存活；授权被取消 /
+        polkit 拒绝 / 启动失败时 pkexec 立刻退出。因此：
+          - 轮询期内退出 → 授权失败：保留本窗口，横幅说明（不闪退）
+          - 轮询期满仍存活 → 授权进行中/提权实例已启动：退出本窗口
+        """
+        popen, err = core.pkexec_gui_spawn()
+        if popen is None:
+            # 已是 root（err=None，理论上按钮此时已隐藏）或 pkexec 不可用
+            self._banner("gui.msg.elevate_failed", "error",
+                         err=err or tr("gui.msg.already_root"))
+            self._log("error", "gui.msg.elevate_failed",
+                      err=err or "already root")
+            return
+        self._pkexec_popen = popen
+        self._pkexec_polls = 20               # 150ms × 20 ≈ 3s
+        self._banner("gui.msg.elevate_waiting", "info")
+        self._log("info", "gui.log.elevate_requested")
+        core.log_event("elevate: pkexec requested (pid=%s)" % popen.pid)
+        self._pkexec_after = self.after(150, self._poll_pkexec)
+
+    def _poll_pkexec(self):
+        popen = self._pkexec_popen
+        if popen is None:
+            return
+        try:
+            if popen.poll() is None:
+                self._pkexec_polls -= 1
+                if self._pkexec_polls > 0:
+                    self._pkexec_after = self.after(150, self._poll_pkexec)
+                else:
+                    # 3 秒仍存活：授权进行中或提权实例已启动，退出本窗口，
+                    # 避免两个实例并存（授权框关掉后新窗口会出现）
+                    self._pkexec_popen = None
+                    self._log("info", "gui.log.elevate_handover")
+                    self._exit_now()
+                return
+        except Exception:
+            # 窗口已销毁等：放弃轮询
+            self._pkexec_popen = None
+            return
+        # pkexec 已退出 = 授权被取消/失败：保留窗口并说明原因
+        code = popen.returncode
+        self._pkexec_popen = None
+        key = ("gui.msg.elevate_cancelled" if code
+               else "gui.msg.elevate_failed")
+        self._banner(key, "warn", code=code)
+        self._log("warn", key, code=code)
+        core.log_event("elevate: pkexec exited rc=%s; staying unelevated"
+                       % code)
 
     def _exit_now(self):
         self._cancel_timers()
@@ -860,7 +964,7 @@ class HDDocApp(ttk.Window):
     def _cancel_timers(self):
         """取消挂起的 after 回调，避免销毁后 Tcl 报
         “invalid command name …”（提权重启/关闭路径的退出噪声）"""
-        for attr in ("_poll_after", "_admin_after"):
+        for attr in ("_poll_after", "_admin_after", "_pkexec_after"):
             try:
                 after_id = getattr(self, attr, None)
                 if after_id:

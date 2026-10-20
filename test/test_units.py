@@ -353,13 +353,18 @@ class _FakeStat:
 
 _LSBLK_JSON = """{
   "blockdevices": [
-    {"name": "sda", "size": 1000204886016, "model": "WDC WD10EZEX-22MFCA0", "tran": "sata"},
-    {"name": "nvme0n1", "size": 500107862016, "model": "Samsung SSD 980", "tran": "nvme"},
-    {"name": "sdb", "size": "0", "model": null, "tran": "usb"}
+    {"name": "sda", "size": 1000204886016, "model": "WDC WD10EZEX-22MFCA0", "tran": "sata", "type": "disk"},
+    {"name": "nvme0n1", "size": 500107862016, "model": "Samsung SSD 980", "tran": "nvme", "type": "disk"},
+    {"name": "sdb", "size": "0", "model": null, "tran": "usb", "type": "disk"},
+    {"name": "loop0", "size": 68157440, "model": null, "tran": null, "type": "loop"},
+    {"name": "zram0", "size": 2147483648, "model": null, "tran": null, "type": "disk"},
+    {"name": "sr0", "size": null, "model": null, "tran": "sata", "type": "rom"}
   ]
 }"""
 _d = H._parse_lsblk_json(_LSBLK_JSON)
-check("lsblk 解析: 三块盘", len(_d), 3)
+check("lsblk 解析: 只剩三块物理盘（loop/zram/sr 被过滤）", len(_d), 3)
+check("lsblk 过滤: 设备名集合", [x["name"] for x in _d],
+      ["sda", "nvme0n1", "sdb"])
 check("lsblk 解析: sda 容量", _d[0]["size"], 1000204886016)
 check("lsblk 解析: sda 型号", _d[0]["model"], "WDC WD10EZEX-22MFCA0")
 check("lsblk 解析: nvme 总线", _d[1]["tran"], "nvme")
@@ -371,9 +376,40 @@ check("lsblk 解析: 无 blockdevices → []",
       H._parse_lsblk_json('{"blockdevices": []}'), [])
 check("lsblk 解析: 无 name 跳过",
       H._parse_lsblk_json('{"blockdevices": [{"size": 100}]}'), [])
+check("lsblk 过滤: 无 TYPE 列时退回名字前缀过滤",
+      [x["name"] for x in H._parse_lsblk_json(
+          '{"blockdevices": [{"name": "sda", "size": 100},'
+          '                   {"name": "loop1", "size": 50}]}')],
+      ["sda"])
+# _is_physical_block_name：TYPE 与名字前缀双保险（zram 的 TYPE 也是 disk）
+check("块名判定: sda 是物理盘", H._is_physical_block_name("sda", "disk"), True)
+check("块名判定: nvme0n1 是物理盘", H._is_physical_block_name("nvme0n1", "disk"), True)
+check("块名判定: loop0 不是（前缀）", H._is_physical_block_name("loop0", "disk"), False)
+check("块名判定: zram0 不是（前缀，即使 TYPE=disk）",
+      H._is_physical_block_name("zram0", "disk"), False)
+check("块名判定: dm-0 不是", H._is_physical_block_name("dm-0", "disk"), False)
+check("块名判定: sr0 不是（TYPE=rom）", H._is_physical_block_name("sr0", "rom"), False)
+check("块名判定: 分区 sda1 不是（TYPE=part）",
+      H._is_physical_block_name("sda1", "part"), False)
+check("块名判定: 空名不是", H._is_physical_block_name("", "disk"), False)
+check("块名判定: 无 TYPE 时仅按前缀", H._is_physical_block_name("sda", None), True)
+check("块名判定: 无 TYPE 时 loop 仍排除",
+      H._is_physical_block_name("loop3", None), False)
 
 # list_drives 的 Linux 分支：patch IS_WIN + _linux_list_drives，验证透传
 import unittest.mock as _mock
+
+
+class _FakePopen:
+    """假 Popen：带 pid/returncode/poll，模拟 pkexec 子进程"""
+    def __init__(self, rc=None):
+        self.returncode = rc
+        self.pid = 4242
+
+    def poll(self):
+        return self.returncode
+
+
 try:
     _saved_win = H.IS_WIN
     H.IS_WIN = False
@@ -391,6 +427,10 @@ try:
     check("物理磁盘识别(Linux /dev/nvme0n1)", H.is_physical_target("/dev/nvme0n1"), True)
     check("物理磁盘识别(Linux 普通文件)", H.is_physical_target("/home/u/test.img"), False)
     check("物理磁盘识别(Linux /tmp)", H.is_physical_target("/tmp"), False)
+    # 虚拟块设备不是物理盘：扫它们不需要 root，也不该触发提权
+    check("虚拟块设备识别(loop 不提权)", H.is_physical_target("/dev/loop0"), False)
+    check("虚拟块设备识别(zram 不提权)", H.is_physical_target("/dev/zram0"), False)
+    check("虚拟块设备识别(dm-0 不提权)", H.is_physical_target("/dev/dm-0"), False)
     with _mock.patch.object(H.os, "stat",
                             side_effect=lambda p: _FakeStat(0o020000)):  # S_IFCHR
         check("物理磁盘识别(Linux /dev/null 字符设备不算)",
@@ -407,19 +447,22 @@ try:
               H.query_target_size("/dev/sda"), 1000204886016)
     with _mock.patch.object(H.os, "open", side_effect=OSError("EPERM")):
         check("块设备打不开时容量 None", H.query_target_size("/dev/sda"), None)
-    # request_elevation gui=True：同步 sudo 会卡死 GUI，必须异步 pkexec
+    # pkexec_gui_spawn：GUI 提权原语（request_elevation 与启动/扫描提权共用）
     _popen_calls = []
     with _mock.patch("shutil.which", return_value="/usr/bin/pkexec"), \
          _mock.patch.object(H.subprocess, "Popen",
                             side_effect=lambda cmd, **kw: _popen_calls.append(
-                                (cmd, kw)) or None), \
+                                (cmd, kw)) or _FakePopen()), \
          _mock.patch.object(H.os, "geteuid", return_value=1000, create=True), \
          _mock.patch.dict(H.os.environ, {"DISPLAY": ":0",
                                          "XAUTHORITY": "/run/user/1000/.Xauthority"}):
+        _popen, _perr = H.pkexec_gui_spawn(argv=["HD_Doc.py"])
         _ok, _code, _err = H.request_elevation(wait=False, gui=True,
                                                argv=["HD_Doc.py"])
+    check("pkexec_gui_spawn 返回子进程句柄", _popen is not None, True)
+    check("pkexec_gui_spawn 无错误", _perr, None)
     check("GUI 提权走 pkexec", _ok, True)
-    check("pkexec 命令已构造", len(_popen_calls), 1)
+    check("pkexec 命令已构造", len(_popen_calls), 2)
     if _popen_calls:
         _cmd, _kw = _popen_calls[0]
         check("pkexec 命令行", _cmd[0], "/usr/bin/pkexec")
@@ -437,6 +480,8 @@ try:
     check("无 pkexec 时报错", (_ok2, "pkexec" in (_err2 or "")), (False, True))
     with _mock.patch.object(H.os, "geteuid", return_value=0, create=True):
         check("已是 root 直接放行", H.request_elevation(gui=True)[0], True)
+        check("pkexec_gui_spawn root 时返回 (None, None)",
+              H.pkexec_gui_spawn(argv=["HD_Doc.py"]), (None, None))
 finally:
     H.IS_WIN = _saved_win
 

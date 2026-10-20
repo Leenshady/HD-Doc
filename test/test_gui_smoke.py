@@ -384,6 +384,103 @@ if vals:   # 本机枚举到物理盘时才断言（无盘/权限受限时空列
 print("Drive labels OK (model + capacity only, %d drives, mapping=%d)"
       % (len(vals), len(app._target_paths)))
 
+# ---- Linux 适配：目标下拉无型号时显示内核名（sda/nvme0n1）而非 Disk N ----
+import unittest.mock as _mock
+
+
+class _FakePopen:
+    """假 Popen：模拟 pkexec 子进程（rc=None 表示仍存活）"""
+    def __init__(self, rc=None):
+        self.returncode = rc
+        self.pid = 4242
+
+    def poll(self):
+        return self.returncode
+
+
+_saved_iswin = H.IS_WIN
+H.IS_WIN = False
+try:
+    with _mock.patch.object(H, "list_drives", return_value=[
+            {"index": 0, "path": "/dev/sda", "size": 1000204886016,
+             "model": "WDC WD10EZEX-22MFCA0", "bus": "sata"},
+            {"index": 1, "path": "/dev/nvme0n1", "size": 500107862016,
+             "model": "", "bus": "nvme"}]):
+        app._refresh_drives()
+        app.update()
+        vals = list(app.combo_target["values"])
+    assert len(vals) == 2, vals
+    assert vals[0].startswith("WDC WD10EZEX"), vals
+    assert vals[1].startswith("nvme0n1") and "Disk" not in vals[1], vals
+    assert app._target_paths.get(vals[0]) == "/dev/sda", app._target_paths
+    print("Linux drive labels OK (model, or kernel name fallback): %r" % (vals,))
+
+    # ---- Linux 提权场景 1：pkexec 很快退出（授权取消/失败）→ 窗口保留 ----
+    # 旧版 after(200) 无条件退出：授权被取消时窗口直接消失且无提示=闪退
+    with _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(_FakePopen(126), None)):
+        app._relaunch_elevated()
+    time.sleep(0.25)          # 等 after(150, _poll_pkexec) 到期
+    app.update()
+    assert app.winfo_exists(), "pkexec 失败时窗口必须保留（不能闪退）"
+    assert app._pkexec_popen is None
+    banner = app.lbl_banner.cget("text")
+    assert "126" in banner and "Elevation" in banner, banner
+    print("Elevation cancelled OK (window kept, banner shows exit 126)")
+
+    # ---- 场景 2：pkexec 存活（授权进行中）→ 轮询期满退出本窗口 ----
+    # ttkbootstrap 只允许单根窗口，不能新建第二个 App：用记录器替换
+    # _exit_now（验证"会退出"而不真销毁）
+    exited = []
+    _real_exit_now = app._exit_now
+    app._exit_now = lambda: exited.append(True)
+    with _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(_FakePopen(None), None)):
+        app._relaunch_elevated()
+    app._pkexec_polls = 1     # 只轮一次即移交（不必真等 3 秒）
+    time.sleep(0.25)
+    app.update()
+    assert exited, "授权进行中应在轮询期满后退出本窗口（移交提权实例）"
+    assert "Waiting for authorization" in app.lbl_banner.cget("text")
+    app._exit_now = _real_exit_now
+    print("Elevation handover OK (window exits once authorization is up)")
+
+    # ---- 场景 3：无 pkexec → 横幅报错，窗口保留 ----
+    with _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(None, "pkexec not found")):
+        app._relaunch_elevated()
+    app.update()
+    assert app.winfo_exists()
+    assert "pkexec not found" in app.lbl_banner.cget("text")
+    print("No-pkexec OK (banner error, window kept)")
+
+    # ---- 场景 4：ensure_admin_at_startup 在 Linux 也发起提权 ----
+    with _mock.patch.object(H, "is_admin", return_value=False), \
+         _mock.patch.object(H, "auto_elevate_enabled", return_value=True), \
+         _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(_FakePopen(126), None)):
+        assert H.ensure_admin_at_startup() is False, \
+            "授权失败应返回 False（标准权限继续启动）"
+    _clock = [0.0]
+
+    def _fake_monotonic():
+        _clock[0] += 1.0
+        return _clock[0]
+
+    with _mock.patch.object(H, "is_admin", return_value=False), \
+         _mock.patch.object(H, "auto_elevate_enabled", return_value=True), \
+         _mock.patch.object(H.time, "sleep", lambda s: None), \
+         _mock.patch.object(H.time, "monotonic", _fake_monotonic), \
+         _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(_FakePopen(None), None)):
+        assert H.ensure_admin_at_startup() is True, \
+            "授权进行中应返回 True（提权实例接管，本进程退出）"
+    print("ensure_admin_at_startup(Linux) OK (cancel→False, auth→True)")
+finally:
+    H.IS_WIN = _saved_iswin
+    app._refresh_drives()
+    app.update()
+
 # ---- 日志自动滚动到底部 ----
 app.txt_log.delete("1.0", "end")
 for i in range(120):

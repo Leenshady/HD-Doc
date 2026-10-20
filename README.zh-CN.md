@@ -74,11 +74,14 @@ sudo ~/.venv/hddoc/bin/python HD_Doc.py        # 终端里以 root 启动（推�
 
 要点：
 
-- **设备下拉框自动列出整盘**（`/dev/sda`、`/dev/nvme0n1`、`/dev/vdb`…，
-  含型号与容量），与 Windows 体验一致；也可以手动输入设备路径
-- **扫物理磁盘必须 root**：fio 要以 root 打开块设备。非 root 启动时界面
-  会提示，点按钮栏的 **"以 root 重启"**（走 pkexec 图形授权，Ubuntu 桌面
-  默认可用）即可；没有 pkexec 时按提示在终端执行 `sudo python3 HD_Doc.py`
+- **设备下拉框只列物理整盘**（`/dev/sda`、`/dev/nvme0n1`、`/dev/vdb`…，
+  含型号与容量），与 Windows 体验一致；`lsblk` 的 loop（snap 挂载）、
+  zram、dm/md、光驱等虚拟块设备已过滤，不会混进来；也可以手动输入
+  设备路径
+- **点应用图标即以 root 运行**：非 root 启动时会在窗口出现前弹出
+  pkexec 授权框（与 Windows 的 UAC 一致，Ubuntu 桌面默认可用）；
+  取消则保持标准权限继续启动，也可随时点按钮栏的 **"以 root 重启"**；
+  没有 pkexec 时按提示在终端执行 `sudo python3 HD_Doc.py`
 - 扫镜像文件（`dd` 出来的 `.img`）不需要 root，直接选文件即可
 - 引擎默认 `libaio`（fio 的 Linux 构建自带）；个别 minimal 构建只有
   `psync`/`posixaio`，下拉框切换即可，界面会自动探测可用引擎
@@ -227,6 +230,7 @@ HD_Doc_gui.py   ttkbootstrap 界面（中英双语，浅色/深色主题）
 HD_Doc.py       入口：分发到 CLI 或 GUI
 build_exe.py    PyInstaller 打包（Windows/Linux 单文件可执行程序）
 build_ubuntu_pkg.py   Ubuntu 安装包打包（.run 自解压 + .tar.gz）
+make_icon.py    应用图标生成（PIL 绘制：1024 主图 + hicolor 全套 + 多分辨率 .ico）
 packaging/ubuntu/    安装脚本（install.sh / uninstall.sh）与安装包校验
 requirements.txt  运行依赖（ttkbootstrap，GUI 需要）
 lang/           界面文案（en.json、zh.json）

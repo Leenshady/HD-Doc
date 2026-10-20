@@ -54,6 +54,17 @@ info "已删除程序目录: $PREFIX"
 for f in "$LAUNCHER" "$DESKTOP_FILE" "$ICON_FILE"; do
     [ -e "$f" ] && rm -f "$f" && info "已删除: $f"
 done
+PX="${HD_DOC_PIXMAPS:-/usr/share/pixmaps}/hd-doc.png"
+[ -e "$PX" ] && rm -f "$PX" && info "已删除: $PX"
+# 全套 hicolor 尺寸图标（install.sh 安装的）
+ICON_ROOT=${HD_DOC_ICON_ROOT:-/usr/share/icons/hicolor}
+for sz_dir in "$ICON_ROOT"/*/apps; do
+    [ -f "$sz_dir/hd-doc.png" ] || continue
+    rm -f "$sz_dir/hd-doc.png" && info "已删除: $sz_dir/hd-doc.png"
+done
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f "$ICON_ROOT" 2>/dev/null || true
+fi
 
 [ -f "$MANIFEST" ] && rm -f "$MANIFEST" && info "已删除安装清单: $MANIFEST"
 [ -d "$MANIFEST_DIR" ] && rmdir "$MANIFEST_DIR" 2>/dev/null || true

@@ -83,14 +83,17 @@ sudo ~/.venv/hddoc/bin/python HD_Doc.py        # from a terminal as root (recomm
 
 Notes:
 
-- The target dropdown lists whole disks automatically (`/dev/sda`,
+- The target dropdown lists **whole physical disks only** (`/dev/sda`,
   `/dev/nvme0n1`, `/dev/vdb`, ... with model and capacity), same experience
-  as on Windows; you can also type a device path by hand
-- Physical disks require root: fio must open the block device as root.
-  When started unelevated the UI says so — click **"Restart as root"**
-  in the button bar (pkexec graphical authorization, standard on the
-  Ubuntu desktop); without pkexec, run `sudo python3 HD_Doc.py` from a
-  terminal as instructed
+  as on Windows; virtual block devices from `lsblk` (loop mounts for snaps,
+  zram, dm/md, optical drives) are filtered out; you can also type a device
+  path by hand
+- **Clicking the app icon runs as root**: an unelevated start pops up the
+  pkexec authorization prompt before the window appears (same flow as the
+  Windows UAC, available on the Ubuntu desktop by default); cancel to keep
+  standard rights, or click **"Restart as root"** in the button bar at any
+  time; without pkexec, run `sudo python3 HD_Doc.py` from a terminal as
+  instructed
 - Image files (e.g. `dd` output) need no root — just pick the file
 - The default engine is `libaio` (ships with the usual fio builds); some
   minimal builds only offer `psync`/`posixaio` — switch it in the dropdown,
@@ -256,6 +259,7 @@ HD_Doc_gui.py   ttkbootstrap GUI (bilingual, light/dark theme)
 HD_Doc.py       entry point: dispatches to CLI or GUI
 build_exe.py    PyInstaller packaging (Windows/Linux single-file executables)
 build_ubuntu_pkg.py  Ubuntu install package builder (.run + .tar.gz)
+make_icon.py    app icon generation (PIL: 1024 master + hicolor set + multi-res .ico)
 packaging/ubuntu/    installer scripts (install.sh / uninstall.sh) and package validator
 requirements.txt  runtime dependencies (ttkbootstrap, for the GUI)
 lang/           interface strings (en.json, zh.json)

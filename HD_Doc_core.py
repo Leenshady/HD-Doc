@@ -466,6 +466,15 @@ def is_physical_target(target):
     if not IS_WIN:
         if not t.startswith("/dev/"):
             return False
+        # 虚拟块设备（loop/zram/dm/md/sr…）不是物理硬盘：扫它们不需要
+        # root，也不该触发提权。/dev/mapper/xxx 等符号链接先解析再判名
+        try:
+            real = os.path.realpath(t)
+        except OSError:
+            real = t
+        if os.path.basename(real).lower() \
+                .startswith(VIRTUAL_BLOCK_PREFIXES):
+            return False
         # 伪设备（/dev/null、/dev/zero 等）不需要提权，也不该扫——按非
         # 物理盘放行，让 fio 的报错说话
         try:
@@ -592,6 +601,51 @@ def _elevation_target(gui=False):
     return exe, subprocess.list2cmdline(params)
 
 
+def pkexec_gui_spawn(argv=None):
+    """Linux GUI 提权：pkexec 异步启动本程序，返回 (popen, err)。
+
+    popen 非 None —— 已启动，调用方轮询它的存活来判断授权是否成功：
+        pkexec 在授权期间一直存活（授权成功 = 提权实例正在运行）；
+        授权被取消/失败时 pkexec 会很快退出（poll() 拿到退出码）。
+    popen 为 None 且 err 为 None —— 当前已是 root，无需提权；
+    popen 为 None 且 err 非 None —— 启动失败（无 pkexec / 异常）。
+
+    为什么不用同步 sudo：GUI 场景（Tk，通常无控制终端）下 sudo 会因
+    "no tty present and no askpass program" 失败，且 subprocess.call
+    会阻塞界面线程直到子进程结束。
+    """
+    argv = list(sys.argv if argv is None else argv)
+    try:
+        if os.geteuid() == 0:
+            return (None, None)
+    except AttributeError:
+        pass
+    pkexec = shutil.which("pkexec")
+    if not pkexec:
+        return (None, tr("err.no_pkexec"))
+    if getattr(sys, "frozen", False):
+        prog, rest = sys.executable, argv[1:]
+    else:
+        prog = sys.executable or "python3"
+        rest = [os.path.abspath(argv[0])] + argv[1:]
+    # pkexec 默认不继承图形会话变量（否则 root 进程连不上 X/Wayland）；
+    # DISPLAY/XAUTHORITY/WAYLAND_DISPLAY/XDG_RUNTIME_DIR 需显式透传
+    env_args = []
+    for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
+              "XDG_RUNTIME_DIR"):
+        v = os.environ.get(k)
+        if v:
+            env_args.append("%s=%s" % (k, v))
+    try:
+        popen = subprocess.Popen(
+            [pkexec, "env"] + env_args + [prog] + rest,
+            start_new_session=True,   # 脱离本进程组：父进程退出不影响
+            cwd=os.getcwd())
+        return (popen, None)
+    except Exception as e:
+        return (None, str(e))
+
+
 def request_elevation(argv=None, wait=False, gui=False):
     """以管理员身份重新启动本程序（Windows: 弹 UAC；其他平台: sudo）。
 
@@ -617,30 +671,12 @@ def request_elevation(argv=None, wait=False, gui=False):
             # and no askpass program" 失败，且 subprocess.call 阻塞界面线程
             # 直到子进程结束——必须异步。改用 pkexec（Ubuntu 桌面默认自带，
             # 走 polkit 弹图形密码框），启动后本进程随即退出。
-            pkexec = shutil.which("pkexec")
-            if not pkexec:
-                return (False, None, tr("err.no_pkexec"))
-            if getattr(sys, "frozen", False):
-                prog, rest = sys.executable, argv[1:]
-            else:
-                prog = sys.executable or "python3"
-                rest = [os.path.abspath(argv[0])] + argv[1:]
-            # pkexec 默认不继承图形会话变量（否则 root 进程连不上 X/Wayland）；
-            # DISPLAY/XAUTHORITY/WAYLAND_DISPLAY/XDG_RUNTIME_DIR 需显式透传
-            env_args = []
-            for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
-                      "XDG_RUNTIME_DIR"):
-                v = os.environ.get(k)
-                if v:
-                    env_args.append("%s=%s" % (k, v))
-            try:
-                subprocess.Popen(
-                    [pkexec, "env"] + env_args + [prog] + rest,
-                    start_new_session=True,   # 脱离本进程组：父进程退出不影响
-                    cwd=os.getcwd())
-                return (True, None, None)
-            except Exception as e:
-                return (False, None, str(e))
+            # 返回的 popen 由调用方轮询：授权被取消时 pkexec 立刻退出，
+            # 调用方据此保留原窗口并提示，而不是无条件消失（闪退）。
+            popen, err = pkexec_gui_spawn(argv)
+            if popen is None:
+                return (False, None, err)
+            return (True, None, None)
         sudo = shutil.which("sudo")
         if not sudo:
             return (False, None, tr("err.no_sudo"))
@@ -1449,11 +1485,37 @@ def _ps_disk_info():
 # ---------------------------------------------------------------- Linux 磁盘枚举
 # /dev/sda、/dev/nvme0n1、/dev/vdb…；lsblk -d 已过滤分区，只列整盘。
 # MODEL 为空时用 gui.disk_n 兜底名（与 Windows 侧 list_drives 的返回结构一致）。
-def _parse_lsblk_json(text):
-    """解析 `lsblk -b -J -d -o NAME,SIZE,MODEL,TRAN` 的 JSON 输出。
+# 这些前缀的块设备不是物理硬盘：loop（snap 等镜像挂载，Ubuntu 上动辄
+# 十几个）、ram、zram、dm-（设备映射/LVM）、md（软阵列）、sr（光驱）、
+# fd（软驱）。lsblk -d 列的是"所有顶层设备"，不过滤就会在目标下拉框里
+# 出现一排没有型号的"Disk N"（用户反馈"扫描出了很多磁盘"）。
+VIRTUAL_BLOCK_PREFIXES = ("loop", "ram", "zram", "dm-", "md", "sr", "fd")
 
-    返回 [{name, size, model, tran}]；size 非正整数时置 None（容忍 "0B"
-    之类的异常输出）。纯函数，便于单测（不依赖 lsblk 是否安装）。
+
+def _is_physical_block_name(name, blk_type=None):
+    """内核块设备名是否对应物理硬盘。
+
+    blk_type 为 lsblk 的 TYPE 字段（"disk"/"loop"/"rom"…）：非空时以它为准
+    （lsblk 对 zram 等也可能报 "disk"，故名字前缀过滤始终生效）；为空
+    （老版本 lsblk 无 TYPE 列）时仅按名字前缀判断。
+    """
+    n = (name or "").strip().lower()
+    if not n:
+        return False
+    if n.startswith(VIRTUAL_BLOCK_PREFIXES):
+        return False
+    if blk_type:
+        return blk_type.strip().lower() == "disk"
+    return True
+
+
+def _parse_lsblk_json(text):
+    """解析 `lsblk -b -J -d -o NAME,SIZE,MODEL,TRAN,TYPE` 的 JSON 输出。
+
+    只保留物理硬盘（见 _is_physical_block_name）：TYPE=="disk" 且名字
+    不带 loop/ram/zram/dm-/md/sr/fd 前缀。返回 [{name, size, model, tran}]；
+    size 非正整数时置 None（容忍 "0B" 之类的异常输出）。纯函数，便于单测
+    （不依赖 lsblk 是否安装）。
     """
     try:
         doc = json.loads(text)
@@ -1463,6 +1525,8 @@ def _parse_lsblk_json(text):
     for dev in doc.get("blockdevices") or []:
         name = str(dev.get("name") or "").strip()
         if not name:
+            continue
+        if not _is_physical_block_name(name, dev.get("type")):
             continue
         size = dev.get("size")
         try:
@@ -1487,8 +1551,15 @@ def _sys_block_drives():
     except OSError:
         return out
     for name in names:
-        # 只收整盘：排除 loop*/ram*/dm-*（loop 设备/内存盘/设备映射）
-        if name.startswith(("loop", "ram", "dm-", "md", "zram")):
+        # 只收物理整盘：排除 loop*/ram*/dm-*（loop 设备/内存盘/设备映射）
+        # 等虚拟块设备——它们都位于 /sys/devices/virtual/block/ 下
+        if name.startswith(VIRTUAL_BLOCK_PREFIXES):
+            continue
+        try:
+            if "/virtual/" in os.path.realpath(os.path.join(base, name)) \
+                    .replace("\\", "/"):
+                continue
+        except OSError:
             continue
         d = os.path.join(base, name)
         size = None
@@ -1527,7 +1598,7 @@ def _linux_list_drives():
     devs = []
     try:
         p = subprocess.run(
-            ["lsblk", "-b", "-J", "-d", "-o", "NAME,SIZE,MODEL,TRAN"],
+            ["lsblk", "-b", "-J", "-d", "-o", "NAME,SIZE,MODEL,TRAN,TYPE"],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=20)
         if p.returncode == 0:

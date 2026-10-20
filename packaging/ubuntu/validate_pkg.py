@@ -188,6 +188,8 @@ def main():
         env["HD_DOC_DESKTOP"] = os.path.join(work, "hd-doc.desktop")
         env["HD_DOC_ICON"] = os.path.join(work, "hd-doc.png")
         env["HD_DOC_MANIFEST_DIR"] = os.path.join(work, "var-lib", "hd-doc")
+        env["HD_DOC_ICON_ROOT"] = os.path.join(work, "icons", "hicolor")
+        env["HD_DOC_PIXMAPS"] = os.path.join(work, "pixmaps")
         r = subprocess.run(["sh", os.path.join(src, "install.sh"),
                             "--prefix", prefix, "-y"],
                            capture_output=True, text=True, env=env,
@@ -217,7 +219,20 @@ def main():
             d = open(env["HD_DOC_DESKTOP"], encoding="utf-8").read()
             check("desktop Exec=hd-doc", "Exec=hd-doc" in d)
             check("desktop Icon=hd-doc", "Icon=hd-doc" in d)
-        check("图标已安装", os.path.isfile(env["HD_DOC_ICON"]))
+            check("desktop StartupWMClass=HD_Doc", "StartupWMClass=HD_Doc" in d)
+        # 全套 hicolor 尺寸 + pixmaps 兜底（单尺寸安装会让 GNOME 显示
+        # 默认齿轮状兜底图标——用户反馈"图标跟设置的一样"）
+        icon_root = env["HD_DOC_ICON_ROOT"]
+        got_sizes = sorted(os.listdir(icon_root)) if os.path.isdir(icon_root) else []
+        check("hicolor 全套尺寸已安装",
+              got_sizes == ["128x128", "256x256", "48x48", "512x512", "64x64"],
+              got_sizes)
+        for sz in got_sizes:
+            p = os.path.join(icon_root, sz, "apps", "hd-doc.png")
+            check("图标 %s/apps/hd-doc.png" % sz, os.path.isfile(p))
+        check("pixmaps 兜底图标",
+              os.path.isfile(os.path.join(env["HD_DOC_PIXMAPS"],
+                                          "hd-doc.png")))
 
         # 卸载
         r3 = subprocess.run(["sh", os.path.join(src, "uninstall.sh"),
@@ -226,6 +241,16 @@ def main():
         check("uninstall.sh 退出码 0", r3.returncode == 0, r3.stderr.strip())
         check("卸载后目录已删除", not os.path.exists(prefix))
         check("卸载后启动器已删除", not os.path.exists(launcher))
+        icon_root = env["HD_DOC_ICON_ROOT"]
+        left = [os.path.join(icon_root, sz, "apps", "hd-doc.png")
+                for sz in os.listdir(icon_root)
+                if os.path.isfile(os.path.join(icon_root, sz, "apps",
+                                               "hd-doc.png"))] \
+            if os.path.isdir(icon_root) else []
+        check("卸载后 hicolor 图标全部删除", not left, left)
+        check("卸载后 pixmaps 图标已删除",
+              not os.path.isfile(os.path.join(env["HD_DOC_PIXMAPS"],
+                                              "hd-doc.png")))
 
         # 负例：危险目录
         r4 = subprocess.run(["sh", os.path.join(src, "install.sh"), "--prefix", "/"],

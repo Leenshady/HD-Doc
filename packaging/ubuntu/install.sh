@@ -173,12 +173,42 @@ EOF
 chmod 755 "$LAUNCHER"
 
 # ---------------------------------------------------------------- 图标 + 桌面项
-ICON_SRC="$SRC/img/hd-doc-256.png"
-[ -f "$ICON_SRC" ] || ICON_SRC="$SRC/img/HD_Doc.png"
-if [ -f "$ICON_SRC" ]; then
-    mkdir -p "$(dirname "$ICON_FILE")"
-    cp "$ICON_SRC" "$ICON_FILE"
+# 安装全套 hicolor 尺寸（48/64/128/256/512）+ pixmaps 兜底 + 刷新图标缓存。
+# 只装单一尺寸时，GNOME 程序坞/应用网格可能匹配不到图标而显示默认的
+# 齿轮状兜底图标（用户反馈"应用图标跟设置的图标一样"）。
+ICON_ROOT=${HD_DOC_ICON_ROOT:-/usr/share/icons/hicolor}
+installed_icons=""
+for sz_dir in "$SRC"/img/icons/hicolor/*/apps; do
+    [ -f "$sz_dir/hd-doc.png" ] || continue
+    sz=$(basename "$(dirname "$sz_dir")")          # 512x512
+    dst="$ICON_ROOT/$sz/apps/hd-doc.png"
+    mkdir -p "$(dirname "$dst")"
+    cp "$sz_dir/hd-doc.png" "$dst"
+    installed_icons="$installed_icons $sz"
+done
+if [ -z "$installed_icons" ]; then
+    # 兜底：包里没有多尺寸图标时，至少装 256 版
+    ICON_SRC="$SRC/img/hd-doc-256.png"
+    [ -f "$ICON_SRC" ] || ICON_SRC="$SRC/img/HD_Doc.png"
+    if [ -f "$ICON_SRC" ]; then
+        mkdir -p "$(dirname "$ICON_FILE")"
+        cp "$ICON_SRC" "$ICON_FILE"
+        installed_icons=" 256x256(兜底)"
+    fi
 fi
+# pixmaps 兜底位置（个别旧桌面环境只查这里）
+PIXMAPS_DIR=${HD_DOC_PIXMAPS:-/usr/share/pixmaps}
+mkdir -p "$PIXMAPS_DIR"
+if [ -f "$SRC/img/hd-doc-256.png" ]; then
+    cp "$SRC/img/hd-doc-256.png" "$PIXMAPS_DIR/hd-doc.png"
+elif [ -f "$SRC/img/HD_Doc.png" ]; then
+    cp "$SRC/img/HD_Doc.png" "$PIXMAPS_DIR/hd-doc.png"
+fi
+# 刷新图标主题缓存（缺工具时静默跳过；GNOME 不依赖缓存也能按目录扫描）
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f "$ICON_ROOT" 2>/dev/null || true
+fi
+[ -n "$installed_icons" ] && info "已安装图标:$installed_icons"
 
 mkdir -p "$(dirname "$DESKTOP_FILE")"
 cat > "$DESKTOP_FILE" <<EOF
@@ -196,6 +226,7 @@ Terminal=false
 Categories=System;Utility;HardwareSettings;
 Keywords=disk;health;fio;scan;harddisk;
 StartupNotify=true
+StartupWMClass=HD_Doc
 EOF
 chmod 644 "$DESKTOP_FILE"
 command -v update-desktop-database >/dev/null 2>&1 && \
@@ -224,8 +255,8 @@ cat <<EOF
             hd-doc --cli --help   # 命令行模式
  应用菜单   系统应用列表中搜索 "HD Doc"
 
- 扫描物理磁盘需要 root（打不开设备时点界面里的"以 root 重启"）；
- 扫描镜像文件（dd 出来的 .img）无需 root。
+ 扫描物理磁盘需要 root：从应用图标启动时会自动弹出 pkexec 授权框
+ （与 Windows 的 UAC 一致；取消则保持标准权限，扫镜像文件不受影响）。
  日志位置   ~/.config/HD_Doc/HD_Doc.log
  卸载       sudo $PREFIX/uninstall.sh
 ============================================================
