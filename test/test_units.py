@@ -188,6 +188,57 @@ check("自适应: 1 段时单行", _g(1)[2], 1)
 check("自适应: 宽画布下列数更多",
       H.plan_grid(2000, 400, 20)[1] > H.plan_grid(400, 2000, 20)[1], True)
 
+# ---------- 热力图固定格数：UI 一致性（任何容量/分段都是同样多的格） ----------
+check("固定格数常量", H.MAP_CELLS, 256)
+check("固定格数平铺后全覆盖",
+      H.plan_grid(1100, 350, H.MAP_CELLS)[1] * H.plan_grid(1100, 350, H.MAP_CELLS)[2]
+      >= H.MAP_CELLS, True)
+check("固定格数不超出画布",
+      H.plan_grid(1100, 350, H.MAP_CELLS)[4]
+      + H.plan_grid(1100, 350, H.MAP_CELLS)[2] * H.plan_grid(1100, 350, H.MAP_CELLS)[0]
+      <= 350 + 1e-6, True)
+
+# ---------- weighted_median：段统计聚合进格（按块数加权） ----------
+check("加权中位数: 空列表", H.weighted_median([]), None)
+check("加权中位数: 权重全 0", H.weighted_median([(100.0, 0)]), None)
+check("加权中位数: 单值", H.weighted_median([(2200.0, 1024)]), 2200.0)
+check("加权中位数: 零权重项被忽略",
+      H.weighted_median([(999.0, 0), (2200.0, 4)]), 2200.0)
+check("加权中位数: 大权重决定中位",
+      H.weighted_median([(2200.0, 9), (9000.0, 1)]), 2200.0)
+check("加权中位数: 反向权重", H.weighted_median([(2200.0, 1), (9000.0, 9)]), 9000.0)
+check("加权中位数: 等权取较低中位",
+      H.weighted_median([(2200.0, 1), (2400.0, 1)]), 2200.0)
+
+# ---------- seg_cell_span / block_cell_index：段与块 → 格 的字节映射 ----------
+N = H.MAP_CELLS
+check("段跨度: 8MB 盘首段占一半格", H.seg_cell_span(0, 4 << 20, 8 << 20, N),
+      (0, 127))
+check("段跨度: 8MB 盘第二段", H.seg_cell_span(4 << 20, 4 << 20, 8 << 20, N),
+      (128, 255))
+check("段跨度: 小段少格（1MB/8MB → 32 格）",
+      H.seg_cell_span(0, 1 << 20, 8 << 20, N), (0, 31))
+check("段跨度: 容量未知 → 广播", H.seg_cell_span(0, None, None, N), None)
+check("段跨度: 读到末尾覆盖到末格",
+      H.seg_cell_span(4 << 20, None, 8 << 20, N), (128, 255))
+check("段跨度: 越界钳制到末格", H.seg_cell_span(100 << 20, 4 << 20, 8 << 20, N),
+      (255, 255))
+check("块→格: 首块", H.block_cell_index(0, 1 << 20, 8 << 20, N), 0)
+check("块→格: 中间块(5MB/8MB)", H.block_cell_index(5, 1 << 20, 8 << 20, N), 160)
+check("块→格: 末块(7MB/8MB)", H.block_cell_index(7, 1 << 20, 8 << 20, N), 224)
+check("块→格: 越界钳制末格", H.block_cell_index(99, 1 << 20, 8 << 20, N), 255)
+check("块→格: 容量未知 → 广播", H.block_cell_index(5, 1 << 20, None, N), None)
+check("块→格: 块大小未知 → 广播", H.block_cell_index(5, 0, 8 << 20, N), None)
+# 1TB 盘 4G 分段（用户实际场景）：233 段全部落进 256 格、无越界
+_seg1t = H.sanitize_segments(H.plan_segments(HDD_1TB, 4 << 30, 4 << 20), 4 << 20)
+_spans = [H.seg_cell_span(o, s, HDD_1TB, N) for o, s in _seg1t]
+check("1TB/4G: 每段都映射到合法格区间",
+      all(a is not None and 0 <= a <= b < N for a, b in _spans), True)
+check("1TB/4G: 首段从第 0 格起", _spans[0][0], 0)
+check("1TB/4G: 末段到第 255 格止", _spans[-1][1], N - 1)
+check("1TB/4G: 格全覆盖（段跨度并集覆盖全部格）",
+      sum(b - a + 1 for a, b in _spans) >= N, True)
+
 # ---------- 热力图颜色：四档（正常/偏慢/读取错误/未扫描），很慢档已取消 ----------
 # 读取错误必须是红色系；与偏慢金黄必须一眼可辨。
 def _rgb(h):

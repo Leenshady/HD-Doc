@@ -89,20 +89,28 @@ check("A stop_requested=True", s.get("stop_requested"), True)
 check("A 无错误块", len(s["error_blocks"]), 0)
 check("A errno_segments=0", s["errno_segments"], 0)
 # 停止时正在扫的段：lat 是截断样本（SSD 短段启动瞬态放大中位数），
-# 必须整段放弃——不进统计、不发 seg_stat、热力图该格保持未扫描
+# 必须整段放弃——不发 seg_stat，该段覆盖的所有格保持未扫描
 segs = s["segments"]
 stopped_segs = [i for i, sg in enumerate(segs) if sg.get("stopped")]
 check("A 至少一段被标记 stopped", len(stopped_segs) >= 1, True)
 for i in stopped_segs:
     check("A 段%d 延迟统计已丢弃" % (i + 1), segs[i]["median_us"], None)
     check("A 段%d 最大延迟已丢弃" % (i + 1), segs[i]["max_us"], None)
-    check("A 段%d 格子保持未扫描(无延迟)" % (i + 1), app.cells[i]["median"], None)
-    check("A 段%d 格子无块数" % (i + 1), app.cells[i]["n"], 0)
-# 反向：任何显示了延迟数据的格子都必须来自完整读完的段（无假慢格）
-for i, c in enumerate(app.cells):
-    if c["median"] is not None:
-        check("A 有数据的段%d 必须完整读完" % (i + 1),
-              not segs[i].get("stopped"), True)
+    covered = app.seg_cells[i]
+    check("A 段%d 覆盖的格保持未扫描(无延迟)" % (i + 1),
+          all(app.cells[c]["median"] is None for c in covered), True)
+    check("A 段%d 覆盖的格无块数" % (i + 1),
+          all(app.cells[c]["n"] == 0 for c in covered), True)
+# 反向：有延迟数据的格，必须被至少一个完整读完的段覆盖（无假慢格）
+bad = []
+for ci, c in enumerate(app.cells):
+    if c["median"] is None:
+        continue
+    if not any((not segs[j].get("stopped")) and ci in app.seg_cells[j]
+               for j in range(len(segs))):
+        bad.append(ci)
+check("A 有数据的格必须被完整段覆盖", bad, [])
+check("A 热力图格数固定", len(app.cells), H.MAP_CELLS)
 check("A 状态标签=完成（中止）", app.lbl_state.cget("text"), "Done (aborted)")
 check("A 错误标签=无", app.lbl_errors.cget("text"), "Errors: none")
 check("A 错误树为空", len(app.tree_err.get_children()), 0)
@@ -121,8 +129,8 @@ print("\n== 场景 B：停止落在扫描结束后（竞态路径，aborted=Fals
 root, app, popups = new_app()
 # 直接以"停止前发现真实错误 + aborted=False + stop_requested=True"的汇总
 # 驱动 _on_finished——这正是竞态下旧逻辑会误报的组合
-app._reset_map(2, [(0, 4 << 20, None), (4 << 20, 4 << 20, None)])
-app.seg_block_base = [0, 4]
+app.total_size = 8 << 20
+app._reset_map([(0, 4 << 20, None), (4 << 20, 4 << 20, None)])
 fake = {
     "target": BIG, "bs": 4 << 20, "ioengine": "windowsaio", "direct": True,
     "total_size": 8 << 20, "segments": [], "n_blocks": 2, "ok": 1, "slow": 0,
@@ -143,6 +151,8 @@ check("B 横幅不含'物理损伤'警报口径",
 check("B 状态标签=完成", app.lbl_state.cget("text"), "Done")
 check("B 汇总含停止状态行",
       "stopped by user" in app.txt_summary.get("1.0", "end"), True)
+check("B 错误块计入热力图（块5 偏移 20MB 越界 → 钳制到末格）",
+      app.cells[H.MAP_CELLS - 1]["errors"], 1)
 app._cancel_timers()
 app.destroy()
 root.destroy()
@@ -153,8 +163,8 @@ root, app, popups = new_app()
 fake2 = dict(fake)
 fake2["stop_requested"] = False
 fake2["aborted"] = False
-app._reset_map(2, [(0, 4 << 20, None), (4 << 20, 4 << 20, None)])
-app.seg_block_base = [0, 4]
+app.total_size = 8 << 20
+app._reset_map([(0, 4 << 20, None), (4 << 20, 4 << 20, None)])
 app._on_finished(fake2)
 check("C 无弹窗（改为 error 级横幅）", popups, [])
 check("C 横幅为错误警报口径",

@@ -32,7 +32,6 @@ import statistics
 import sys
 import threading
 import time
-from bisect import bisect_right
 from datetime import datetime
 
 import ttkbootstrap as ttk
@@ -130,9 +129,11 @@ class HDDocApp(ttk.Window):
         self.grid_rows = 1
         self.cell_pitch = CELL_SIZE_MIN + CELL_GAP
         self.grid_ox = self.grid_oy = 0.0
-        self.n_segments = 0
-        self.seg_meta = []        # 每格的 (offset, size|None, span|None) 供悬停显示
-        self.seg_block_base = []  # 每格起始全局块号（error_block → 格 映射）
+        self.n_cells = 0            # 热力图格数（固定 MAP_CELLS，UI 一致性）
+        self.seg_meta = []          # 扫描计划每段 (offset, size|None, span|None)
+        self.cell_span = []         # 每格字节范围 (start, end|None)，悬停显示
+        self.seg_cells = []         # 每段覆盖的格下标列表（聚合映射）
+        self._err_seen = set()      # 已计入热力图的错误块（事件/汇总去重）
         self.total_size = None
         self.planned_bytes = 0   # 快速扫描的计划读取量（进度/ETA 分母）
         self.thresholds = 0.0
@@ -368,6 +369,7 @@ class HDDocApp(ttk.Window):
                 # 重建后直接 _set_state 重放（按新语言）
             },
             # 热力图：_reset_map 会新建 cells/cell_items，先备份数据
+            # （格数固定 MAP_CELLS，重建后按段计划重算段→格映射）
             "map": (list(self.seg_meta), [dict(c) for c in self.cells],
                     self.thresholds) if self.cells else None,
         }
@@ -402,7 +404,7 @@ class HDDocApp(ttk.Window):
         self._update_admin_ui()
         if snap["map"] is not None:
             seg_meta, cells, thresholds = snap["map"]
-            self._reset_map(len(cells), seg_meta)
+            self._reset_map(seg_meta)             # 固定格数 + 段→格映射重算
             self.cells = [dict(c) for c in cells]   # 数据搬回新格子
             self.thresholds = thresholds
             if self.summary is not None:
@@ -534,7 +536,7 @@ class HDDocApp(ttk.Window):
 
         # ---- 热力图 ----
         map_frame = self._reg(ttk.LabelFrame(self, padding=(8, 6, 8, 6)),
-                              "gui.map_title")
+                              "gui.map_title", n=MAP_CELLS)
         map_frame.pack(fill="both", expand=True, padx=8, pady=4)
         self.canvas_map = tk.Canvas(map_frame, bg=colors.bg, highlightthickness=0)
         self.canvas_map.pack(fill="both", expand=True, padx=4, pady=4)
@@ -935,15 +937,10 @@ class HDDocApp(ttk.Window):
             self._log("info", "gui.log.capacity_plan",
                       sz=fmt_bytes(size), n=len(segments), b=size // bs)
 
-        # 热力图一格 = 一个段（快速扫描时为一个抽样区域）；容量未知时
-        # segments=[(0, None)]，只有一格
-        seg_meta = []
-        seg_block_base = []
-        blk_acc = 0
-        for off, sz in segments:
-            seg_meta.append((off, sz, None))
-            seg_block_base.append(blk_acc)
-            blk_acc += (sz // bs) if sz else 0
+        # 热力图固定 MAP_CELLS 格（UI 一致性）：格按全盘字节范围均分，段
+        # 统计按覆盖范围聚合进格；容量未知时 segments=[(0, None)]，单段
+        # 广播到所有格（无位置信息，只显示整盘聚合，见 _reset_map）
+        seg_meta = [(off, sz, None) for off, sz in segments]
         # 快速扫描记录区域跨度，供悬停显示"抽样 X / 区域 Y"
         if quick:
             region = None
@@ -953,8 +950,8 @@ class HDDocApp(ttk.Window):
                 if nxt is not None and off is not None:
                     region = nxt - off
                 seg_meta[i] = (off, sz, region)
-        self._reset_map(len(segments), seg_meta)
-        self.seg_block_base = seg_block_base
+        self._reset_map(seg_meta)
+        self._err_seen = set()      # 新一轮扫描：错误块去重集清零
         if not size:
             self._log("warn", "gui.log.no_size_map")
         self.tree_err.delete(*self.tree_err.get_children())
@@ -1038,43 +1035,72 @@ class HDDocApp(ttk.Window):
         core.log_event("gui: exit")
         self.destroy()
 
-    # ---------------------------------------------------------- 网格（横向 · 一格 = 一段）
-    def _reset_map(self, n_segments, seg_meta=None):
-        """按段数重建热力图：自适应平铺（格子大小随画布与段数动态计算），
-        横向行优先排布（从左到右铺满一行再下一行），一格代表一个扫描段
-        （快速扫描时代表一个抽样区域）。"""
+    # ---------------------------------------------------------- 网格（固定格数 · 按字节范围聚合）
+    def _reset_map(self, seg_meta, total_size=None):
+        """按固定格数重建热力图（UI 一致性：任何扫描都是 MAP_CELLS 格、
+        同一套平铺布局，不随容量/分段方式变化）。
+
+        格按全盘字节范围均分（第 i 格覆盖 [total*i/N, total*(i+1)/N)），
+        段统计按覆盖的字节范围聚合进格：
+          - 段少格多（如 8MB 盘 2 段）：一段覆盖多格，每格都计入该段；
+          - 段多格少（如 1TB 盘 4G 分段 233 段）：一格含多段，按块数
+            加权求中位数（weighted_median），max 取各段最大值。
+        容量未知时无位置信息：单段 [(0, None)] 广播到所有格，悬停显示
+        "容量未知"——此时热力图只表达整盘聚合，不代表盘内分布。
+        """
         self.canvas_map.delete("all")
         self.canvas_map.update_idletasks()
         w = max(100, self.canvas_map.winfo_width())
         h = max(100, self.canvas_map.winfo_height())
-        self.n_segments = n_segments or 0
+        total = total_size if total_size else self.total_size
         self.seg_meta = list(seg_meta) if seg_meta else []
-        ncells = self.n_segments
-        if ncells:
-            pitch, cols, rows, ox, oy = plan_grid(w, h, ncells)
-            self.cell_pitch = pitch
-            self.grid_cols = cols
-            self.grid_rows = rows
-            self.grid_ox = ox
-            self.grid_oy = oy
-            cell = max(CELL_SIZE_MIN, int(pitch) - CELL_GAP)
-            self.cells = [{"median": None, "max": None, "n": 0, "errors": 0}
-                          for _ in range(ncells)]
-            self.cell_items = []
-            for i in range(ncells):
-                r, c = divmod(i, cols)   # 行优先：铺满一行再下一行
-                x = ox + c * pitch
-                y = oy + r * pitch
-                self.cell_items.append(self.canvas_map.create_rectangle(
-                    x, y, x + cell, y + cell,
-                    fill=COLOR_PENDING, outline=""))
-        else:
-            self.cell_pitch = CELL_SIZE_MIN + CELL_GAP
-            self.grid_cols = self.grid_rows = 0
-            self.grid_ox = self.grid_oy = 0.0
-            self.cells = []
-            self.cell_items = []
+        self.n_cells = MAP_CELLS
+        pitch, cols, rows, ox, oy = plan_grid(w, h, self.n_cells)
+        self.cell_pitch = pitch
+        self.grid_cols = cols
+        self.grid_rows = rows
+        self.grid_ox = ox
+        self.grid_oy = oy
+        cell = max(CELL_SIZE_MIN, int(pitch) - CELL_GAP)
+        self.cells = []
+        self.cell_items = []
+        self.cell_span = []
+        for i in range(self.n_cells):
+            r, c = divmod(i, cols)   # 行优先：铺满一行再下一行
+            x = ox + c * pitch
+            y = oy + r * pitch
+            self.cell_items.append(self.canvas_map.create_rectangle(
+                x, y, x + cell, y + cell,
+                fill=COLOR_PENDING, outline=""))
+            self.cells.append({"median": None, "max": None, "n": 0,
+                               "errors": 0, "parts": []})
+            a = total * i // self.n_cells if total else None
+            b = total * (i + 1) // self.n_cells if total else None
+            self.cell_span.append((a, b))
+        # 段 → 覆盖的格（字节重叠）；容量未知（total 为空）→ 广播到所有格
+        self.seg_cells = []
+        for off, sz, _span in self.seg_meta:
+            rng = seg_cell_span(off, sz, total, self.n_cells)
+            self.seg_cells.append(list(range(self.n_cells)) if rng is None
+                                  else list(range(rng[0], rng[1] + 1)))
         self.dirty.clear()
+
+    def _add_seg_stat(self, cell_idx, ev):
+        """把一段的统计聚合进格：parts 累积 (median, max, n_blocks)，格中位数
+        按块数加权、max 取最大、块数求和。一段跨多格时每格都计入该段。"""
+        if not (0 <= cell_idx < len(self.cells)):
+            return
+        med, mx = ev.get("median_us"), ev.get("max_us")
+        n = ev.get("n_blocks") or 0
+        if med is None or n <= 0:
+            return
+        c = self.cells[cell_idx]
+        c["parts"].append((med, mx, n))
+        c["n"] = sum(p[2] for p in c["parts"])
+        c["median"] = weighted_median([(p[0], p[2]) for p in c["parts"]])
+        maxes = [p[1] for p in c["parts"] if p[1] is not None]
+        c["max"] = max(maxes) if maxes else None
+        self.dirty.add(cell_idx)
 
     def _cell_color(self, idx, slow_thr):
         c = self.cells[idx]
@@ -1129,30 +1155,38 @@ class HDDocApp(ttk.Window):
         self._flush_cells()
         self._poll_after = self.after(100, self._poll_queue)
 
-    def _block_to_segment(self, blk_idx):
-        """全局块号 → 段格子下标（段起点块号列表二分查找）。
-        容量未知时的 [(0, None)] 整盘段会吸收所有块号。"""
-        if not self.seg_block_base:
-            return 0
-        return max(0, min(bisect_right(self.seg_block_base, blk_idx) - 1,
-                          len(self.cells) - 1))
+    def _mark_error_block(self, blk_idx, bs=None, total=None):
+        """错误块计入热力图：按块起始字节精确落到格（格按字节范围均分，
+        比旧实现按段二分更准——段边界与格边界不再重合）。同一块只计一次：
+        扫描中 live error_block 事件与 finished 汇总会各带一遍（旧实现重复
+        计数只是碰巧不影响颜色；现在悬停要显示错误数，必须去重）。
+        容量未知时无位置信息：广播到所有格（与统计广播一致，整盘聚合显示）。
+        """
+        if not self.cells or blk_idx in self._err_seen:
+            return
+        self._err_seen.add(blk_idx)
+        bs = bs or self.scan_bs
+        total = total if total else self.total_size
+        cell = block_cell_index(blk_idx, bs, total, self.n_cells)
+        if cell is None:                      # 容量未知：广播到所有格
+            for c in self.cells:
+                c["errors"] += 1
+            self.dirty.update(range(len(self.cells)))
+            return
+        self.cells[cell]["errors"] += 1
+        self.dirty.add(cell)
 
     def _handle_event(self, ev):
         et = ev.get("type")
         if et == "seg_stat":
-            # 一段读完：段级统计直接决定格子颜色（一格 = 一段）
+            # 一段读完：段级统计按覆盖范围聚合进各格（一格可含多段，
+            # 加权中位数见 _add_seg_stat；一段也可覆盖多格）
             idx = ev.get("index", 0)
-            if 0 <= idx < len(self.cells):
-                c = self.cells[idx]
-                c["median"] = ev.get("median_us")
-                c["max"] = ev.get("max_us")
-                c["n"] = ev.get("n_blocks", 0)
-                self.dirty.add(idx)
+            if 0 <= idx < len(self.seg_cells):
+                for c in self.seg_cells[idx]:
+                    self._add_seg_stat(c, ev)
         elif et == "error_block":
-            cell = self._block_to_segment(ev["index"])
-            if 0 <= cell < len(self.cells):
-                self.cells[cell]["errors"] += 1
-                self.dirty.add(cell)
+            self._mark_error_block(ev["index"])
         elif et == "tick":
             self._on_tick(ev)
         elif et == "segment":
@@ -1225,11 +1259,11 @@ class HDDocApp(ttk.Window):
         self.progress.config(mode="determinate")
         self.progress["value"] = 100
         self.thresholds = s["slow_thr_us"]
-        # 错误块计入热力图单元格（否则汇总里的错误块不显示颜色）
+        # 错误块计入热力图单元格（按字节偏移精确到格；live 事件已计过
+        # 的块在这里去重，不重复计数）
+        total = s.get("total_size") or self.total_size
         for idx in s["error_blocks"]:
-            cell = self._block_to_segment(idx)
-            if 0 <= cell < len(self.cells):
-                self.cells[cell]["errors"] += 1
+            self._mark_error_block(idx, s.get("bs"), total)
         self._redraw_cells()
         self._render_result_ui(s)
         core.log_event(
@@ -1390,20 +1424,23 @@ class HDDocApp(ttk.Window):
             self.lbl_hover.config(text="")
             return
         cell = self.cells[idx]
-        off, size, span = (self.seg_meta[idx]
-                           if idx < len(self.seg_meta) else (None, None, None))
-        blk_start = (self.seg_block_base[idx]
-                     if idx < len(self.seg_block_base) else 0)
-        key = "gui.hover_region" if self.scan_quick else "gui.hover_segment"
-        txt = tr(key, i=idx + 1, n=self.n_segments,
-                 off=fmt_bytes(off) if off is not None else "?")
-        if size:
-            txt += tr("gui.hover_sample" if self.scan_quick else "gui.hover_size",
-                      sz=fmt_bytes(size))
-            if self.scan_quick and span and span != size:
-                txt += tr("gui.hover_region_span", sz=fmt_bytes(span))
-        elif size is None and off is not None:
-            txt += tr("gui.hover_to_end")
+        a, b = (self.cell_span[idx]
+                if idx < len(self.cell_span) else (None, None))
+        if a is None or b is None:
+            # 容量未知：无位置信息，热力图只显示整盘聚合
+            txt = tr("gui.hover_cell_unknown", i=idx + 1, n=self.n_cells)
+        else:
+            txt = tr("gui.hover_cell", i=idx + 1, n=self.n_cells,
+                     a=fmt_bytes(a), b=fmt_bytes(b))
+        bs = self.scan_bs or (self.summary or {}).get("bs") or 0
+        if self.scan_quick:
+            # 快速扫描：只有落在抽样起点格里的格子有数据，其余格是
+            # "未抽样"（不是未扫描——整盘都计划了，只是没读）
+            if cell["median"] is not None:
+                txt += tr("gui.hover_sampled", sz=fmt_bytes(cell["n"] * bs))
+            else:
+                txt += tr("gui.hover_not_sampled")
+        blk_start = (a // bs) if (a is not None and bs) else 0
         txt += tr("gui.hover_blocks", b=blk_start, n=cell["n"], e=cell["errors"])
         if cell["median"] is not None:
             txt += tr("gui.hover_median", v=cell["median"] / 1000.0)

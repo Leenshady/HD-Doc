@@ -46,6 +46,10 @@ COLOR_PENDING = "#D3D1C7"  # 未扫描
 CELL_GAP = 1              # 格子间隙（px）
 CELL_SIZE_MAX = 40        # 单格最大边长（段太少时封顶，避免巨型块）
 CELL_SIZE_MIN = 3         # 单格最小边长（段极多时保底可辨）
+MAP_CELLS = 256           # 热力图固定格数（UI 一致性）：任何容量/分段方式下
+                          # 都是同样多的格、同一套布局。格按全盘字节范围均分，
+                          # 段统计按覆盖范围聚合进格（段少格多时一段覆盖多格；
+                          # 段多格少时一格含多段，聚合用加权中位数）
 
 # 状态图例与总线类型的中文名（兼容旧引用）；GUI 显示请用
 # status_text() / bus_type_name()（随界面语言切换）
@@ -1115,6 +1119,59 @@ def plan_grid(canvas_w, canvas_h, n_cells, size_max=CELL_SIZE_MAX):
     ox = max(0.0, (w - cols * pitch) / 2.0)
     oy = max(0.0, (h - rows * pitch) / 2.0)
     return pitch, cols, rows, ox, oy
+
+
+def weighted_median(pairs):
+    """(值, 权重) 列表 → 加权中位数（取下中位数：累积权重首次达到
+    总权重一半时的值）；空列表或权重全为 0 时返回 None。
+
+    热力图把多个段的统计聚合进一格时用：段与格的块数不同，不能对段中位数
+    取简单平均（4MiB 段和 512KiB 段的中位数不代表同等信息量），按块数
+    加权才接近"这一格全体块的中位数"。
+    """
+    items = [(float(v), float(w)) for v, w in pairs if w and w > 0]
+    if not items:
+        return None
+    items.sort()
+    half = sum(w for _v, w in items) / 2.0
+    acc = 0.0
+    for v, w in items:
+        acc += w
+        if acc >= half:
+            return v
+    return items[-1][0]
+
+
+def seg_cell_span(off, size, total, n_cells):
+    """段的字节范围 → 热力图格下标区间 [start, end]（含端点，已钳制）。
+
+    按字节重叠计算：段可以跨多格（段少格多时，如 8MB 盘两段填满 256 格），
+    一格也可以含多段（段多格少时）。容量未知（total 为空）或段读到设备
+    末尾（size=None）时返回 None，表示无位置信息，调用方应广播到所有格。
+    """
+    if not total or n_cells <= 0:
+        return None
+    start = max(0, min(n_cells - 1, (off or 0) * n_cells // total))
+    if size is None:                      # 读到设备末尾：覆盖到最后一格
+        return (start, n_cells - 1)
+    if size <= 0:                         # 空段只占起始格（防御，正常已被过滤）
+        return (start, start)
+    end = max(start, min(n_cells - 1, (off + size - 1) * n_cells // total))
+    return (start, end)
+
+
+def block_cell_index(blk_idx, bs, total, n_cells):
+    """全局块号 → 热力图格下标（按块起始字节落在哪个格的字节范围）。
+
+    容量或块大小未知时返回 None（无位置信息，调用方广播到所有格）；
+    块越界时钳制到最后一格（与旧实现按段查找的钳制语义一致）。
+    """
+    if not total or not bs or n_cells <= 0:
+        return None
+    off = blk_idx * bs
+    if off >= total:
+        return n_cells - 1
+    return off * n_cells // total
 
 
 # 各平台的默认引擎候选：Windows 官方构建只有 windowsaio/sync/psync；

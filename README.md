@@ -8,8 +8,10 @@ Runs on Windows (admin rights required for physical disks) and Linux.
 
 ## Features
 
-- Block-level heat map: each cell is one scan segment, colored by latency
-  against adaptive thresholds (median-based, so slow disks are not all red)
+- Heat map with a fixed 256-cell grid (same layout for every scan, so the
+  UI stays consistent); cells split the disk into equal byte ranges and
+  segment stats are aggregated per cell, colored by latency against
+  adaptive thresholds (median-based, so slow disks are not all red)
 - Error block list with errno interpretation
 - Quick scan: reads only a head sample of each region, like HD Tune Quick Scan
 - On-demand reports: nothing is saved unless you export (segments.csv,

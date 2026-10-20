@@ -73,29 +73,38 @@ app._on_quick_toggle()
 assert str(app.combo_quick_sample.cget("state")) == "disabled"
 print("Quick-scan controls OK (sample dropdown enabled only when checked)")
 
-# ---- 热力图（withdrawn 窗口布局尺寸为 1x1，monkeypatch 出真实画布尺寸） ----
+# ---- 热力图（固定格数：UI 一致性；withdrawn 窗口布局尺寸为 1x1，
+#      monkeypatch 出真实画布尺寸） ----
 app.canvas_map.winfo_width = lambda: 1100
 app.canvas_map.winfo_height = lambda: 700
 N_SEG = 19
 BS = 4 << 20
 SEG_SIZE = 4 << 20
+TOTAL = N_SEG * SEG_SIZE
+app.total_size = TOTAL            # 模拟 _start_scan 里查到的容量
+app.scan_bs = BS                  # 模拟 _start_scan 里定下的块大小
 seg_meta = [(i * SEG_SIZE, SEG_SIZE, None) for i in range(N_SEG)]
-app._reset_map(N_SEG, seg_meta)
-# 段起点块号表（每段 1024 块）——error_block → 格子 的映射依据
-app.seg_block_base = [i * 1024 for i in range(N_SEG)]
-print("Heatmap %d cells (%d cols x %d rows, pitch=%.1fpx, adaptive tiling) OK"
+app._reset_map(seg_meta)
+print("Heatmap %d cells (%d cols x %d rows, pitch=%.1fpx, fixed count) OK"
       % (len(app.cells), app.grid_cols, app.grid_rows, app.cell_pitch))
-assert len(app.cells) == N_SEG
-# 自适应平铺：格子远大于旧的固定 6px；cols*rows 覆盖全部段；网格不超出画布
-assert app.cell_pitch > 20, app.cell_pitch
-assert app.grid_cols * app.grid_rows >= N_SEG
+# 固定格数：段多段少都是 MAP_CELLS 格、同一套布局（UI 一致性——
+# 换盘/换分段方式不再改变热力图的格数与形状）
+assert len(app.cells) == H.MAP_CELLS == 256, len(app.cells)
+assert len(app.cell_items) == 256
+assert app.grid_cols * app.grid_rows >= 256
 assert app.grid_ox + app.grid_cols * app.cell_pitch <= 1100 + 1e-6
 assert app.grid_oy + app.grid_rows * app.cell_pitch <= 700 + 1e-6
-# plan_grid 纯函数：段数少→格子封顶；段数多(1862)→格子更小；极端段数全可见
-p_few = plan_grid(1100, 700, 4)[0]
-p_many = plan_grid(1100, 700, 1862)[0]
-assert p_few <= H.CELL_SIZE_MAX and p_many < p_few, (p_few, p_many)
-assert plan_grid(1100, 700, 5000)[1] * plan_grid(1100, 700, 5000)[2] >= 5000
+# 格按字节范围均分：首格 [0, TOTAL/256)，末格到 TOTAL
+assert app.cell_span[0] == (0, TOTAL // 256), app.cell_span[0]
+assert app.cell_span[-1][1] == TOTAL, app.cell_span[-1]
+# 段 → 格映射：19 段铺满 256 格（每段约 13~14 格，边界格可被两段覆盖）
+assert len(app.seg_cells) == N_SEG
+assert app.seg_cells[0][0] == 0 and app.seg_cells[-1][-1] == 255
+assert sum(len(s) for s in app.seg_cells) >= 256
+# plan_grid 纯函数：固定 256 格在常见画布下都放得下且不超出
+_g256 = plan_grid(1100, 350, 256)
+assert _g256[1] * _g256[2] >= 256
+assert _g256[4] + _g256[2] * _g256[0] <= 350 + 1e-6
 
 # ---- 事件流（经 _handle_event 分发，与真实队列消费路径一致） ----
 app._handle_event({"type": "segment", "index": 0, "total": N_SEG,
@@ -106,19 +115,24 @@ for i in range(N_SEG):
     app._handle_event({"type": "seg_stat", "index": i,
                        "median_us": 2200.0 + i * 10, "max_us": 2400.0 + i * 10,
                        "n_blocks": 1024})
-app._handle_event({"type": "error_block", "index": 5})   # 块 5 → 段 0
+app._handle_event({"type": "error_block", "index": 5})   # 块 5 → 偏移 20MB → 格 67
 app._handle_event({"type": "log", "stream": "info", "line": "test log"})
 app._handle_event({"type": "log", "stream": "warn", "line": "test warn"})
 app._handle_event({"type": "log", "stream": "stderr", "line": "fio: test"})
 app._update_status(50.0, 1500000000, 26, 0)
 app.update()
 print("Event flow OK | hover: %r" % app.lbl_hover.cget("text"))
-print("Cell 0: median=%.1f n=%d errors=%d"
-      % (app.cells[0]["median"], app.cells[0]["n"], app.cells[0]["errors"]))
-assert app.cells[0]["errors"] == 1
-assert app.cells[18]["median"] == 2200.0 + 18 * 10
+# 块 5（偏移 20MB）→ 格 67；段 18 覆盖末尾诸格（格 255 拿到段 18 的中位数）
+print("Cell 0: median=%.1f n=%d | cell67 errors=%d | cell255 median=%.1f"
+      % (app.cells[0]["median"], app.cells[0]["n"],
+         app.cells[67]["errors"], app.cells[255]["median"]))
+assert app.cells[67]["errors"] == 1
+assert app.cells[255]["median"] == 2200.0 + 18 * 10
+# 聚合：边界格被两段覆盖时块数求和、中位数按块数加权（格 13 = 段0+段1）
+assert app.cells[13]["n"] == 2048, app.cells[13]["n"]
+assert app.cells[13]["median"] == 2200.0, app.cells[13]["median"]
 
-# ---- 悬停（横向行优先：最后一个格子 → 第 r 行第 c 列，坐标按自适应 pitch 反算） ----
+# ---- 悬停（行优先：最后一个格子；坐标按 pitch 与居中偏移反算到格内） ----
 last = len(app.cells) - 1
 r, c = divmod(last, app.grid_cols)
 ev = types.SimpleNamespace(
@@ -128,10 +142,12 @@ app._on_canvas_motion(ev)
 hover = app.lbl_hover.cget("text")
 print("Hover info: %r" % hover)
 assert hover, "hover info should not be empty"
-assert ("Segment #%d/%d" % (last + 1, N_SEG)) in hover and "offset" in hover, \
-    "hover should contain segment number and offset"
-assert "median latency" in hover and "block 18432 on" in hover, \
-    "hover should contain median latency and start block"
+assert "Cell #256/256" in hover and "offset" in hover, \
+    "hover should contain cell number and byte range"
+_a, _b = app.cell_span[last]
+assert H.fmt_bytes(_a) in hover and H.fmt_bytes(_b) in hover, hover
+assert "median latency" in hover, "hover should contain median latency"
+assert "start block %d" % (_a // BS) in hover, hover
 
 # ---- 完成事件（合成汇总） ----
 summary = {
@@ -165,7 +181,7 @@ assert not popped, "clean scan must not pop any dialog: %r" % (popped,)
 assert "Scan complete" in app.lbl_banner.cget("text"), app.lbl_banner.cget("text")
 assert "Block size" in app.txt_summary.get("1.0", "end")
 
-# ---- 错误场景汇总（错误展示路径 + 错误块映射到段格子 + error 级横幅） ----
+# ---- 错误场景汇总（错误展示路径 + 错误块按字节偏移映射到格 + error 级横幅） ----
 summary2 = dict(summary)
 summary2["error_blocks"] = {5: "fio read failure EIO (offset 20971520)"}
 summary2["errno_segments"] = 1
@@ -174,8 +190,8 @@ summary2["last_errno_name"] = H.errno_name(5)
 summary2["unscanned_bytes"] = 8388608
 app._on_finished(summary2)
 app.update()
-print("Error scenario OK | error tree rows: %d | cell0 errors=%d"
-      % (len(app.tree_err.get_children()), app.cells[0]["errors"]))
+print("Error scenario OK | error tree rows: %d | cell67 errors=%d"
+      % (len(app.tree_err.get_children()), app.cells[67]["errors"]))
 assert len(app.tree_err.get_children()) == 1
 assert "error blocks" in app.lbl_banner.cget("text")
 assert not popped, "error result must use the in-app banner, not dialogs: %r" % (popped,)
@@ -223,10 +239,11 @@ assert str(app.btn_start.cget("state")) == "disabled", "start stays disabled"
 assert str(app.btn_stop.cget("state")) == "normal", "stop stays enabled"
 assert app.worker is live, "rebuild must not touch the scan thread"
 assert app.lbl_state.cget("text") == "扫描中…", app.lbl_state.cget("text")
-# 热力图数据跨重建保留（errors=2：事件流 1 次 + 错误场景汇总 1 次）
-assert len(app.cells) == N_SEG, len(app.cells)
-assert app.cells[0]["errors"] == 2
-assert app.cells[18]["median"] == 2200.0 + 18 * 10
+# 热力图数据跨重建保留（格数固定 256；错误块经 live 事件与汇总去重后
+# cell67 errors=1，不重复计数）
+assert len(app.cells) == H.MAP_CELLS, len(app.cells)
+assert app.cells[67]["errors"] == 1
+assert app.cells[255]["median"] == 2200.0 + 18 * 10
 # 日志：可翻译条目按新语言重放；fio 原始输出原样保留（不过 i18n）
 log_zh = app.txt_log.get("1.0", "end")
 assert "管理员" in log_zh, log_zh
@@ -245,7 +262,7 @@ assert "Block size" in app.txt_summary.get("1.0", "end"), \
 assert "Scan complete" in app.lbl_banner.cget("text"), \
     "banner must be replayed in the new language"
 assert app.nb.select() == str(app.txt_summary), "selected tab must be kept"
-assert len(app.cells) == N_SEG and app.cells[0]["errors"] == 2
+assert len(app.cells) == H.MAP_CELLS and app.cells[67]["errors"] == 1
 app._set_language("en")
 assert app.btn_start.cget("text") == "Start scan", "same language is a no-op"
 # 还原空闲态按钮（后续用例不关心，保持界面自洽）
