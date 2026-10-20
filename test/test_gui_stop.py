@@ -126,10 +126,10 @@ app.seg_block_base = [0, 4]
 fake = {
     "target": BIG, "bs": 4 << 20, "ioengine": "windowsaio", "direct": True,
     "total_size": 8 << 20, "segments": [], "n_blocks": 2, "ok": 1, "slow": 0,
-    "bad": 0, "error_blocks": {5: "fio read failure EIO (offset 20971520)"},
+    "error_blocks": {5: "fio read failure EIO (offset 20971520)"},
     "unlocated_errors": 0, "median_us": 1000.0, "mean_us": 1000.0,
     "max_us": 2000.0, "p99_us": 2000.0, "slow_thr_us": 3000.0,
-    "bad_thr_us": 8000.0, "elapsed_s": 3.0, "aborted": False,
+    "elapsed_s": 3.0, "aborted": False,
     "stop_requested": True, "errno_segments": 1, "last_errno": 5,
     "last_errno_name": "EIO", "unscanned_bytes": 0,
     "stopped_unscanned_bytes": 0, "unread_tail_bytes": 0, "quick": False,

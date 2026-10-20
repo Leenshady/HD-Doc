@@ -30,7 +30,7 @@ args = argparse.Namespace(
     cli=True, target=TARGET, bs="auto", segment_gb=4, quick=True,
     quick_sample_mb=16, ioengine=None, no_direct=False, no_elevate=True,
     fio=None, limit_mb=0, offset_mb=0, export=None,
-    yellow_mult=3.0, red_mult=8.0, yellow_floor_ms=10.0, red_floor_ms=100.0)
+    yellow_mult=3.0, yellow_floor_ms=10.0)
 
 enc = core._console_encoding()
 buf = io.TextIOWrapper(io.BytesIO(), encoding=enc)

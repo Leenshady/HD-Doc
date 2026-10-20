@@ -185,9 +185,8 @@ def cli_main(args):
             target, bs, segments,
             ioengine=engine, direct=not args.no_direct,
             total_size=size,
-            yellow_mult=args.yellow_mult, red_mult=args.red_mult,
+            yellow_mult=args.yellow_mult,
             yellow_floor_us=int(args.yellow_floor_ms * 1000),
-            red_floor_us=int(args.red_floor_ms * 1000),
             on_event=on_event,
             quick=bool(getattr(args, "quick", False) and size))
     except KeyboardInterrupt:
@@ -202,10 +201,10 @@ def cli_main(args):
         print("\nScan failed; see fio output above.")
         return 1
 
-    core.log_event("cli: finished target=%s blocks=%d ok=%d slow=%d bad=%d "
+    core.log_event("cli: finished target=%s blocks=%d ok=%d slow=%d "
                    "errors=%d aborted=%s stopped=%s elapsed=%.1fs"
                    % (target, summary["n_blocks"], summary["ok"],
-                      summary["slow"], summary["bad"],
+                      summary["slow"],
                       len(summary["error_blocks"]), summary["aborted"],
                       bool(summary.get("stop_requested")),
                       summary["elapsed_s"]))
@@ -224,7 +223,6 @@ def cli_main(args):
     print("Total blocks: %d" % summary["n_blocks"])
     print("OK          : %d" % summary["ok"])
     print("Slow        : %d  (> %.2f ms)" % (summary["slow"], summary["slow_thr_us"] / 1000.0))
-    print("Very slow   : %d  (> %.2f ms)" % (summary["bad"], summary["bad_thr_us"] / 1000.0))
     print("Read errors : %d blocks (fio error segments %d, unlocated error lines %d)"
           % (len(summary["error_blocks"]), summary["errno_segments"],
              summary["unlocated_errors"]))

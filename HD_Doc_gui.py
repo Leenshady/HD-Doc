@@ -135,7 +135,7 @@ class HDDocApp(ttk.Window):
         self.seg_block_base = []  # 每格起始全局块号（error_block → 格 映射）
         self.total_size = None
         self.planned_bytes = 0   # 快速扫描的计划读取量（进度/ETA 分母）
-        self.thresholds = (0.0, 0.0)
+        self.thresholds = 0.0
         self.summary = None
         self.scan_start_ts = None
         self.scan_bs = 0
@@ -549,7 +549,7 @@ class HDDocApp(ttk.Window):
         self._legend_labels = []
         self._legend_swatches = []   # 原生 tk 色块：切主题时手工同步边框色
         for color, key in ((COLOR_OK, "ok"), (COLOR_SLOW, "slow"),
-                           (COLOR_BAD, "bad"), (COLOR_ERROR, "error"),
+                           (COLOR_ERROR, "error"),
                            (COLOR_PENDING, "pending")):
             swatch = tk.Frame(legend, bg=color, width=12, height=12,
                               highlightbackground=colors.border,
@@ -1008,7 +1008,7 @@ class HDDocApp(ttk.Window):
                 ioengine=engine,
                 direct=direct,
                 total_size=size,
-                yellow_mult=3.0, red_mult=8.0,
+                yellow_mult=3.0,
                 on_event=self._post,
                 quick=quick)
         except Exception as e:
@@ -1076,14 +1076,12 @@ class HDDocApp(ttk.Window):
             self.cell_items = []
         self.dirty.clear()
 
-    def _cell_color(self, idx, slow_thr, bad_thr):
+    def _cell_color(self, idx, slow_thr):
         c = self.cells[idx]
         if c["errors"] > 0:
             return COLOR_ERROR
         if c["median"] is None:
             return COLOR_PENDING
-        if c["median"] > bad_thr:
-            return COLOR_BAD
         if c["median"] > slow_thr:
             return COLOR_SLOW
         return COLOR_OK
@@ -1101,14 +1099,14 @@ class HDDocApp(ttk.Window):
             meds = [c["median"] for c in self.cells if c["median"] is not None]
             if meds:
                 med = statistics.median(meds)
-                self.thresholds = (max(med * 3.0, 10000.0), max(med * 8.0, 100000.0))
-        slow_thr, bad_thr = self.thresholds
+                self.thresholds = max(med * 3.0, 10000.0)
+        slow_thr = self.thresholds
         items = self.canvas_map
         batch = list(self.dirty)[:4000]
         for idx in batch:
             if idx < len(self.cell_items) and self.cell_items[idx]:
                 items.itemconfig(self.cell_items[idx],
-                                 fill=self._cell_color(idx, slow_thr, bad_thr))
+                                 fill=self._cell_color(idx, slow_thr))
         self.dirty.clear()
 
     # ---------------------------------------------------------- 事件处理
@@ -1226,8 +1224,7 @@ class HDDocApp(ttk.Window):
         self.progress.stop()
         self.progress.config(mode="determinate")
         self.progress["value"] = 100
-        slow_thr, bad_thr = s["slow_thr_us"], s["bad_thr_us"]
-        self.thresholds = (slow_thr, bad_thr)
+        self.thresholds = s["slow_thr_us"]
         # 错误块计入热力图单元格（否则汇总里的错误块不显示颜色）
         for idx in s["error_blocks"]:
             cell = self._block_to_segment(idx)
@@ -1236,19 +1233,19 @@ class HDDocApp(ttk.Window):
         self._redraw_cells()
         self._render_result_ui(s)
         core.log_event(
-            "scan: finished target=%s blocks=%d ok=%d slow=%d bad=%d "
+            "scan: finished target=%s blocks=%d ok=%d slow=%d "
             "errors=%d aborted=%s stopped=%s elapsed=%.1fs"
-            % (s["target"], s["n_blocks"], s["ok"], s["slow"], s["bad"],
+            % (s["target"], s["n_blocks"], s["ok"], s["slow"],
                len(s["error_blocks"]), s["aborted"],
                bool(s.get("stop_requested")), s["elapsed_s"]))
 
     def _redraw_cells(self):
         """用当前阈值全量重绘热力图（最终阈值/重建界面后调用）"""
-        slow_thr, bad_thr = self.thresholds
+        slow_thr = self.thresholds
         for i in range(len(self.cells)):
             if i < len(self.cell_items) and self.cell_items[i]:
                 self.canvas_map.itemconfig(self.cell_items[i],
-                                           fill=self._cell_color(i, slow_thr, bad_thr))
+                                           fill=self._cell_color(i, slow_thr))
 
     def _render_result_ui(self, s):
         """渲染已完成扫描的结果区（状态行/导出按钮/错误树/汇总页/横幅）。
@@ -1292,7 +1289,7 @@ class HDDocApp(ttk.Window):
         else:
             self._banner("gui.banner.clean", "ok",
                          ok=s["ok"], n=s["n_blocks"], slow=s["slow"],
-                         bad=s["bad"], err=len(s["error_blocks"]))
+                         err=len(s["error_blocks"]))
 
     def _on_failed(self, msg):
         self._set_state("gui.state_failed")
@@ -1316,7 +1313,7 @@ class HDDocApp(ttk.Window):
         if not self.summary:
             return
         s = self.summary
-        slow_thr, bad_thr = s["slow_thr_us"], s["bad_thr_us"]
+        slow_thr = s["slow_thr_us"]
         lines = []
         lines.append(tr("gui.sum.target", t=s["target"]))
         lines.append(tr("gui.sum.bs", bs=fmt_bytes(s["bs"]), n=s["n_blocks"]))
@@ -1333,7 +1330,6 @@ class HDDocApp(ttk.Window):
         lines.append("")
         lines.append(tr("gui.sum.ok", n=s["ok"]))
         lines.append(tr("gui.sum.slow", n=s["slow"], thr=slow_thr / 1000.0))
-        lines.append(tr("gui.sum.bad", n=s["bad"], thr=bad_thr / 1000.0))
         lines.append(tr("gui.sum.read_errors", n=len(s["error_blocks"]),
                         es=s["errno_segments"], ul=s["unlocated_errors"]))
         if s["last_errno"]:

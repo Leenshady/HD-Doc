@@ -88,12 +88,8 @@ def build_parser():
                          "without this flag no files are written")
     ap.add_argument("--yellow-mult", type=float, default=3.0,
                     help="slow threshold = median x N")
-    ap.add_argument("--red-mult", type=float, default=8.0,
-                    help="very slow threshold = median x N")
     ap.add_argument("--yellow-floor-ms", type=float, default=10.0,
                     help="slow threshold floor in ms")
-    ap.add_argument("--red-floor-ms", type=float, default=100.0,
-                    help="very slow threshold floor in ms")
     return ap
 
 

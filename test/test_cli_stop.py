@@ -37,7 +37,7 @@ args = argparse.Namespace(
     cli=True, target=TARGET, bs="4K", segment_gb=0, quick=False,
     quick_sample_mb=0, ioengine=None, no_direct=False, no_elevate=True,
     fio=None, limit_mb=0, offset_mb=0, export=None,
-    yellow_mult=3.0, red_mult=8.0, yellow_floor_ms=10.0, red_floor_ms=100.0)
+    yellow_mult=3.0, yellow_floor_ms=10.0)
 
 # 用与终端编码一致的 TextIOWrapper 捕获输出：cli_main 内的 _ensure_console
 # 发现编码已匹配会提前返回，不会把 sys.stdout 重建到真实 fd 1

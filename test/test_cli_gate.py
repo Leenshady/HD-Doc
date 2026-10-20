@@ -18,9 +18,8 @@ import HD_Doc_cli as HCLI
 def make_args(**kw):
     d = dict(cli=True, target=r"\\.\PhysicalDrive1", bs="4M", segment_gb=0,
              ioengine=None, no_direct=False, fio=None, limit_mb=0, offset_mb=0,
-             yellow_mult=3.0, red_mult=8.0, yellow_floor_ms=10.0,
-             red_floor_ms=100.0, no_elevate=False, quick=False,
-             quick_sample_mb=16.0, export=None)
+             yellow_mult=3.0, yellow_floor_ms=10.0, no_elevate=False,
+             quick=False, quick_sample_mb=16.0, export=None)
     d.update(kw)
     return types.SimpleNamespace(**d)
 

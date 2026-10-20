@@ -6,7 +6,6 @@
   },
   "status.ok": "OK",
   "status.slow": "Slow",
-  "status.bad": "Very slow",
   "status.error": "Read error",
   "status.pending": "Pending",
   "bus.unknown": "Unknown",
@@ -51,7 +50,6 @@
   "rep.n_blocks": "Total blocks: {n}",
   "rep.ok": "OK: {n}",
   "rep.slow": "Slow (>{thr:.2f}ms): {n}",
-  "rep.bad": "Very slow (>{thr:.2f}ms): {n}",
   "rep.read_errors": "Read error blocks: {n} (fio error segments {es}, unlocated error lines {ul})",
   "rep.fio_errno": "fio error code: {code} {name}",
   "rep.unscanned_stopped": "Unscanned bytes: {sz} (stopped by user, expected)",
@@ -66,7 +64,7 @@
   "rep.total_time": "Total time: {d}",
   "rep.aborted_note": "Note: scan was aborted by user; results are incomplete.",
   "rep.threshold_note": "-- Thresholds --",
-  "rep.threshold_detail": "Thresholds adapt to the overall block latency median: slow > max(median x3, 10ms), very slow > max(median x8, 100ms).",
+  "rep.threshold_detail": "Thresholds adapt to the overall block latency median: slow > max(median x3, 10ms).",
   "rep.err_detail": "-- Error block details --",
   "rep.err_line": "Block #{i}  offset {off}  {desc}",
   "rep.csv_seg_header": "Segment,Start offset (bytes),Segment size (bytes),Blocks,Actual I/Os,Expected I/Os,Errno,Errno meaning,Median latency (ms),Max latency (ms),Stopped (stats discarded)",
@@ -172,7 +170,7 @@
   "gui.btn.no": "No",
   "gui.msg.exit_scanning": "A scan is in progress. Exit anyway?",
   "gui.msg.param_error_title": "Invalid parameter",
-  "gui.banner.clean": "Scan complete: {ok}/{n} blocks OK, {slow} slow, {bad} very slow, {err} read errors.",
+  "gui.banner.clean": "Scan complete: {ok}/{n} blocks OK, {slow} slow, {err} read errors.",
   "gui.banner.errors": "Scan found {n} error blocks (fio error segments {es}). The disk may have physical damage; back up important data immediately. See the Error blocks tab.",
   "gui.banner.stopped_with_errors": "Scan stopped by user. {n} error blocks were found before the stop (fio error segments {es}); see the Error blocks tab.",
   "gui.banner.failed": "Scan failed: {msg}",
@@ -185,7 +183,6 @@
   "gui.sum.elapsed": "Elapsed      : {d}",
   "gui.sum.ok": "OK           : {n}",
   "gui.sum.slow": "Slow         : {n} (> {thr:.2f} ms)",
-  "gui.sum.bad": "Very slow    : {n} (> {thr:.2f} ms)",
   "gui.sum.read_errors": "Read errors  : {n} blocks (fio error segments {es}, unlocated error lines {ul})",
   "gui.sum.fio_errno": "fio errno    : {code} {name}",
   "gui.sum.unscanned_stopped": "Unscanned    : {sz} (stopped by user, expected)",
@@ -196,5 +193,5 @@
   "gui.sum.p99": "P99          : {v:.3f} ms",
   "gui.sum.max": "Max          : {v:.3f} ms",
   "gui.sum.aborted_note": "Note: the scan was aborted; results below are incomplete.",
-  "gui.sum.threshold_note": "Thresholds: slow > max(median x3, 10ms), very slow > max(median x8, 100ms)."
+  "gui.sum.threshold_note": "Thresholds: slow > max(median x3, 10ms)."
 }

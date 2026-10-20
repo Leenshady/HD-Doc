@@ -6,7 +6,6 @@
   },
   "status.ok": "正常",
   "status.slow": "偏慢",
-  "status.bad": "很慢",
   "status.error": "读取错误",
   "status.pending": "未扫描",
   "bus.unknown": "未知",
@@ -51,7 +50,6 @@
   "rep.n_blocks": "总块数: {n}",
   "rep.ok": "正常: {n}",
   "rep.slow": "偏慢(>{thr:.2f}ms): {n}",
-  "rep.bad": "很慢(>{thr:.2f}ms): {n}",
   "rep.read_errors": "读取错误块: {n}（fio 报错段 {es}，未定位错误行 {ul}）",
   "rep.fio_errno": "fio 错误码: {code} {name}",
   "rep.unscanned_stopped": "未扫描字节: {sz}（已主动停止，属预期）",
@@ -66,7 +64,7 @@
   "rep.total_time": "总耗时: {d}",
   "rep.aborted_note": "注意: 扫描被用户中止，结果为不完整数据。",
   "rep.threshold_note": "-- 阈值说明 --",
-  "rep.threshold_detail": "阈值基于全体块延迟中位数自适应计算: 偏慢 > max(中位数x3, 10ms)，很慢 > max(中位数x8, 100ms)。",
+  "rep.threshold_detail": "阈值基于全体块延迟中位数自适应计算: 偏慢 > max(中位数x3, 10ms)。",
   "rep.err_detail": "-- 错误块明细 --",
   "rep.err_line": "块 #{i}  偏移 {off}  {desc}",
   "rep.csv_seg_header": "段号,起始偏移(字节),段大小(字节),块数,实际I/O数,预期I/O数,错误码(errno),错误含义,延迟中位数(ms),最大延迟(ms),已停止(统计丢弃)",
@@ -172,7 +170,7 @@
   "gui.btn.no": "否",
   "gui.msg.exit_scanning": "扫描正在进行，确定退出吗？",
   "gui.msg.param_error_title": "参数错误",
-  "gui.banner.clean": "扫描完成：{ok}/{n} 块正常，{slow} 偏慢，{bad} 很慢，{err} 个读取错误。",
+  "gui.banner.clean": "扫描完成：{ok}/{n} 块正常，{slow} 偏慢，{err} 个读取错误。",
   "gui.banner.errors": "扫描发现 {n} 个错误块（fio 报错段 {es}）。该盘存在物理损伤风险，建议立即备份重要数据。详见「错误块列表」。",
   "gui.banner.stopped_with_errors": "扫描已由用户主动停止。停止前已发现 {n} 个错误块（fio 报错段 {es}），详见「错误块列表」。",
   "gui.banner.failed": "扫描失败: {msg}",
@@ -185,7 +183,6 @@
   "gui.sum.elapsed": "总耗时    : {d}",
   "gui.sum.ok": "正常      : {n}",
   "gui.sum.slow": "偏慢      : {n}（> {thr:.2f} ms）",
-  "gui.sum.bad": "很慢      : {n}（> {thr:.2f} ms）",
   "gui.sum.read_errors": "读取错误  : {n} 块（fio 报错段 {es}，未定位错误行 {ul}）",
   "gui.sum.fio_errno": "fio 错误码: {code} {name}",
   "gui.sum.unscanned_stopped": "未扫描字节: {sz}（已主动停止，属预期）",
@@ -196,5 +193,5 @@
   "gui.sum.p99": "P99       : {v:.3f} ms",
   "gui.sum.max": "最大      : {v:.3f} ms",
   "gui.sum.aborted_note": "注意：扫描被中止，以下为不完整结果。",
-  "gui.sum.threshold_note": "阈值说明：偏慢 > max(中位数×3, 10ms)，很慢 > max(中位数×8, 100ms)。"
+  "gui.sum.threshold_note": "阈值说明：偏慢 > max(中位数×3, 10ms)。"
 }

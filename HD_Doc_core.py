@@ -40,11 +40,8 @@ VERSION = "1.0"
 
 # ---------------------------------------------------------------- 常量
 COLOR_OK = "#5DCAA5"       # 正常
-COLOR_SLOW = "#EF9F27"     # 偏慢
-COLOR_BAD = "#E8630A"      # 很慢（原 #D85A30 橙红与"读取错误"暗红太近；深橙与
-                           #   偏慢金黄、读取错误紫均可辨）
-COLOR_ERROR = "#A855F7"    # 读取错误（原 #A32D2D 暗红；改紫色与"很慢"差异最大，
-                           #   且读取错误是与延迟维度不同的异常类别，用对比色表达）
+COLOR_SLOW = "#EF9F27"     # 偏慢（超过阈值即此档，"很慢"档已取消）
+COLOR_ERROR = "#E5484D"    # 读取错误（红色）
 COLOR_PENDING = "#D3D1C7"  # 未扫描
 CELL_GAP = 1              # 格子间隙（px）
 CELL_SIZE_MAX = 40        # 单格最大边长（段太少时封顶，避免巨型块）
@@ -52,7 +49,7 @@ CELL_SIZE_MIN = 3         # 单格最小边长（段极多时保底可辨）
 
 # 状态图例与总线类型的中文名（兼容旧引用）；GUI 显示请用
 # status_text() / bus_type_name()（随界面语言切换）
-STATUS_TEXT = {"ok": "正常", "slow": "偏慢", "bad": "很慢",
+STATUS_TEXT = {"ok": "正常", "slow": "偏慢",
                "error": "读取错误", "pending": "未扫描"}
 
 BUS_TYPES = {0: "未知", 1: "SCSI", 2: "ATAPI", 3: "ATA", 4: "1394", 5: "SSA",
@@ -1601,8 +1598,8 @@ class FioScanner:
 
     # ---------------------------------------------------------- 主流程
     def run(self, target, bs, segments, ioengine=None, direct=True,
-            total_size=None, yellow_mult=3.0, red_mult=8.0,
-            yellow_floor_us=10000, red_floor_us=100000, on_event=None,
+            total_size=None, yellow_mult=3.0,
+            yellow_floor_us=10000, on_event=None,
             quick=False):
         """执行扫描（阻塞）。segments: [(offset, size|None)]，size=None 表示到设备末尾。
         quick=True 表示快速扫描（抽样）：segments 即区域样本列表，仅记录模式
@@ -1883,18 +1880,17 @@ class FioScanner:
                 p99 = srt[min(n - 1, int(n * 0.99))]
             else:
                 med = mean = mx = p99 = 0.0
+            # 单一阈值：超过即"偏慢"（"很慢"档已取消，两档分类）
             slow_thr = max(med * yellow_mult, yellow_floor_us)
-            bad_thr = max(med * red_mult, red_floor_us)
             ok = sum(1 for x in lats if x <= slow_thr)
-            bad = sum(1 for x in lats if x > bad_thr)
-            slow = n - ok - bad
+            slow = n - ok
             summary = {
                 "target": target, "bs": bs, "ioengine": ioengine, "direct": direct,
                 "total_size": total_size, "segments": seg_table,
-                "n_blocks": n, "ok": ok, "slow": slow, "bad": bad,
+                "n_blocks": n, "ok": ok, "slow": slow,
                 "error_blocks": error_blocks, "unlocated_errors": unlocated_errors,
                 "median_us": med, "mean_us": mean, "max_us": mx, "p99_us": p99,
-                "slow_thr_us": slow_thr, "bad_thr_us": bad_thr,
+                "slow_thr_us": slow_thr,
                 "elapsed_s": time.time() - t_start, "aborted": aborted,
                 "stop_requested": stop_requested,
                 "errno_segments": errno_segments, "last_errno": last_errno,
@@ -1980,8 +1976,6 @@ def write_reports(outdir, summary, lang=None):
         f.write(T("rep.ok", n=summary["ok"]) + "\n")
         f.write(T("rep.slow", thr=summary["slow_thr_us"] / 1000.0,
                   n=summary["slow"]) + "\n")
-        f.write(T("rep.bad", thr=summary["bad_thr_us"] / 1000.0,
-                  n=summary["bad"]) + "\n")
         f.write(T("rep.read_errors", n=len(summary["error_blocks"]),
                   es=summary["errno_segments"],
                   ul=summary["unlocated_errors"]) + "\n")

@@ -188,9 +188,8 @@ check("自适应: 1 段时单行", _g(1)[2], 1)
 check("自适应: 宽画布下列数更多",
       H.plan_grid(2000, 400, 20)[1] > H.plan_grid(400, 2000, 20)[1], True)
 
-# ---------- 热力图颜色：很慢 vs 读取错误必须一眼可辨 ----------
-# 回归：旧值 #D85A30(很慢)/#A32D2D(错误) RGB 距离仅 70、色相差 15°，
-# 小格子里几乎分不开。新值必须同时满足大距离与大色相角差。
+# ---------- 热力图颜色：四档（正常/偏慢/读取错误/未扫描），很慢档已取消 ----------
+# 读取错误必须是红色系；与偏慢金黄必须一眼可辨。
 def _rgb(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
@@ -217,13 +216,21 @@ def _pair_gap(c1, c2):
            if h1 is not None and h2 is not None else 180.0)
     return dist, gap
 
-_dist, _gap = _pair_gap(H.COLOR_BAD, H.COLOR_ERROR)
-check("很慢 vs 读取错误 RGB 距离 > 120", _dist > 120, True)
-check("很慢 vs 读取错误 色相差 > 90°", _gap > 90, True)
-# 其余相邻档也要可辨（正常/偏慢/很慢 渐进 + 未扫描）
+# "很慢"档取消：常量与状态键都不应再存在
+check("COLOR_BAD 常量已移除", hasattr(H, "COLOR_BAD"), False)
+check("STATUS_TEXT 无很慢键", "bad" in H.STATUS_TEXT, False)
+check("图例状态键四档", sorted(H.STATUS_TEXT), ["error", "ok", "pending", "slow"])
+# 读取错误 = 红色系（色相落在红区，或极接近无彩色边界不算）
+_err_hue = _hue(_rgb(H.COLOR_ERROR))
+check("读取错误为红色系(色相<15°或>345°)",
+      _err_hue is not None and (_err_hue < 15 or _err_hue > 345), True)
+# 偏慢 vs 读取错误必须可辨（回归：旧橙红/暗红距离仅 70、色相差 15°）
+_dist, _gap = _pair_gap(H.COLOR_SLOW, H.COLOR_ERROR)
+check("偏慢 vs 读取错误 RGB 距离 > 40", _dist > 40, True)
+check("偏慢 vs 读取错误 色相差 > 8°", _gap > 8, True)
+# 其余相邻档也要可辨（正常/偏慢 + 读取错误/未扫描）
 for _a, _b, _n in ((H.COLOR_OK, H.COLOR_SLOW, "正常vs偏慢"),
-                   (H.COLOR_SLOW, H.COLOR_BAD, "偏慢vs很慢"),
-                   (H.COLOR_BAD, H.COLOR_PENDING, "很慢vs未扫描")):
+                   (H.COLOR_ERROR, H.COLOR_PENDING, "错误vs未扫描")):
     d, g = _pair_gap(_a, _b)
     check("相邻档可辨(%s): RGB 距离 > 40" % _n, d > 40, True)
     check("相邻档可辨(%s): 色相差 > 8°" % _n, g > 8, True)
