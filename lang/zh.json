@@ -132,6 +132,7 @@
   "gui.hover_cell": "第 {i}/{n} 格 | 偏移 {a} - {b}",
   "gui.hover_cell_unknown": "第 {i}/{n} 格 | 容量未知（仅整盘统计）",
   "gui.hover_not_sampled": " | 未抽样",
+  "gui.hover_region_src": " | 区域抽样 {sz}（区域 {rg}）",
   "gui.hover_sampled": " | 已抽样 {sz}",
   "gui.hover_blocks": " | 起始块 {b} | 已读 {n} 块 | 错误 {e}",
   "gui.hover_median": " | 延迟中位数 {v:.2f} ms",

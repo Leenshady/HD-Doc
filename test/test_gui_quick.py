@@ -40,8 +40,12 @@ assert app.scan_quick is True
 # 固定格数：512MB 盘与 1TB 盘都是 MAP_CELLS 格、同一套布局（UI 一致性）
 assert len(app.cells) == H.MAP_CELLS == 256, len(app.cells)
 assert app.seg_meta[0] == (0, 16 << 20, 64 << 20), app.seg_meta[0]
-# 段 → 格映射：8 个区域样本各落在各自起点格（64MB 区域 = 32 格）
+# 段 → 格映射：快速扫描按"区域跨度"点亮（64MB 区域 = 32 格），8 个区域
+# 铺满全部 256 格——曾按 16MB 抽样大小点亮（每区仅 8 格），其余 192 格
+# 永久灰，用户反馈"有的块保持灰色"
 assert [c[0] for c in app.seg_cells] == [0, 32, 64, 96, 128, 160, 192, 224]
+assert all(len(c) == 32 for c in app.seg_cells), [len(c) for c in app.seg_cells]
+assert app.cell_region[0] == 0 and app.cell_region[255] == 7
 
 # 轮询直到扫描完成并消费完 finished/worker_done 事件（_poll_queue 100ms 周期）
 t0 = time.time()
@@ -65,32 +69,42 @@ assert all(g["size"] == 16 << 20 for g in s["segments"]), [g["size"] for g in s[
 assert s["n_blocks"] == 8 * 32      # 16M / 512K = 32 块/区
 assert not s["error_blocks"]
 
-# 热力图：8 个样本区各有中位数（已读）。512MB/256 格 = 2MB/格，16MB
-# 样本覆盖 8 格 → 8 区 × 8 格 = 64 格有数据，其余格未抽样（灰）
+# 热力图：快速扫描整区点亮。512MB/256 格 = 2MB/格，64MB 区域 = 32 格，
+# 8 区 × 32 格 = 全部 256 格有数据（回归：只点亮抽样覆盖的格时 192 格永灰）
 filled = sum(1 for c in app.cells if c["median"] is not None)
 print("热力图填充: %d/%d 格 | cell0 median=%.3fms"
       % (filled, len(app.cells), app.cells[0]["median"] / 1000.0))
-assert filled == 64, filled
+assert filled == H.MAP_CELLS, filled
 assert app.cells[0]["n"] == 32 and app.cells[32]["n"] == 32
-# 样本覆盖的格全部同色同值（同一个样本的统计），未覆盖的格保持未抽样
-assert all(c["median"] == app.cells[0]["median"] for c in app.cells[:8])
-assert all(c["median"] is None for c in app.cells[8:32])
+# 同一区域的格同值（区0 = 格 0-31，区1 = 格 32-63，…）；无灰格
+assert all(c["median"] == app.cells[0]["median"] for c in app.cells[:32])
+assert all(c["median"] is not None for c in app.cells)
 
-# 悬停（第一格 = 区域 #1 的样本；坐标按自适应 pitch 与居中偏移反算到格内）
-app._on_canvas_motion(types.SimpleNamespace(
-    x=int(app.grid_ox + app.cell_pitch / 2),
-    y=int(app.grid_oy + app.cell_pitch / 2)))
+# 悬停（第一格 = 区域 #1 的 16MB 抽样供数；坐标按 pitch 与居中偏移反算）
+def _hover_cell(a, idx):
+    r, c = divmod(idx, a.grid_cols)
+    a._on_canvas_motion(types.SimpleNamespace(
+        x=int(a.grid_ox + (c + 0.5) * a.cell_pitch),
+        y=int(a.grid_oy + (r + 0.5) * a.cell_pitch)))
+
+_hover_cell(app, 0)
 hover = app.lbl_hover.cget("text")
 print("悬停: %r" % hover)
-assert ("Cell #1/256" in hover and "sampled 16.0 MB" in hover
+assert ("Cell #1/256" in hover and "region sample 16.0 MB (region 64.0 MB)" in hover
         and "start block 0" in hover and "read 32 blocks" in hover), hover
-# 未抽样的格：悬停明确标注（快速扫描下灰格 = 未抽样，不是未扫描）
-app._on_canvas_motion(types.SimpleNamespace(
-    x=int(app.grid_ox + app.cell_pitch * 8.5),
-    y=int(app.grid_oy + app.cell_pitch / 2)))
+# 区2 的首格（第 33 格）：同样显示区域抽样上下文
+_hover_cell(app, 32)
+hover2 = app.lbl_hover.cget("text")
+print("区2 格悬停: %r" % hover2)
+assert "Cell #33/256" in hover2 and "region sample 16.0 MB" in hover2, hover2
+# 未抽样的格（停止过早/区域无数据）：悬停标注"未抽样"而非"未扫描"
+# ——白盒清掉一格中位数验证该分支（整区点亮后正常不会有灰格）
+app.cells[100]["median"] = None
+_hover_cell(app, 100)
 hover_gap = app.lbl_hover.cget("text")
 print("未抽样格悬停: %r" % hover_gap)
-assert "Cell #9/256" in hover_gap and "not sampled" in hover_gap, hover_gap
+assert "Cell #101/256" in hover_gap and "not sampled" in hover_gap, hover_gap
+app.cells[100]["median"] = app.cells[99]["median"]   # 还原，避免影响后续断言
 
 # 汇总文本含快速扫描覆盖率行（英文口径）
 txt = app.txt_summary.get("1.0", "end")

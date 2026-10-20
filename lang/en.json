@@ -132,6 +132,7 @@
   "gui.hover_cell": "Cell #{i}/{n} | offset {a} - {b}",
   "gui.hover_cell_unknown": "Cell #{i}/{n} | capacity unknown (whole-disk stats)",
   "gui.hover_not_sampled": " | not sampled",
+  "gui.hover_region_src": " | region sample {sz} (region {rg})",
   "gui.hover_sampled": " | sampled {sz}",
   "gui.hover_blocks": " | start block {b} | read {n} blocks | errors {e}",
   "gui.hover_median": " | median latency {v:.2f} ms",

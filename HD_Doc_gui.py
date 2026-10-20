@@ -133,6 +133,7 @@ class HDDocApp(ttk.Window):
         self.seg_meta = []          # 扫描计划每段 (offset, size|None, span|None)
         self.cell_span = []         # 每格字节范围 (start, end|None)，悬停显示
         self.seg_cells = []         # 每段覆盖的格下标列表（聚合映射）
+        self.cell_region = []       # 每格由哪个段/区域供数（悬停显示抽样上下文）
         self._err_seen = set()      # 已计入热力图的错误块（事件/汇总去重）
         self.total_size = None
         self.planned_bytes = 0   # 快速扫描的计划读取量（进度/ETA 分母）
@@ -941,7 +942,8 @@ class HDDocApp(ttk.Window):
         # 统计按覆盖范围聚合进格；容量未知时 segments=[(0, None)]，单段
         # 广播到所有格（无位置信息，只显示整盘聚合，见 _reset_map）
         seg_meta = [(off, sz, None) for off, sz in segments]
-        # 快速扫描记录区域跨度，供悬停显示"抽样 X / 区域 Y"
+        # 快速扫描记录区域跨度：既供悬停显示"抽样 X / 区域 Y"，也是热力图
+        # 的点亮范围（区头抽样结果覆盖整区，见 _reset_map）
         if quick:
             region = None
             for i, (off, sz) in enumerate(segments):
@@ -1047,6 +1049,8 @@ class HDDocApp(ttk.Window):
             加权求中位数（weighted_median），max 取各段最大值。
         容量未知时无位置信息：单段 [(0, None)] 广播到所有格，悬停显示
         "容量未知"——此时热力图只表达整盘聚合，不代表盘内分布。
+        快速扫描按区域跨度点亮（seg_meta 第三元素）：区头 16MB 抽样的
+        结果覆盖整个区域，否则未抽样格会永久灰色（见下方 seg_cells）。
         """
         self.canvas_map.delete("all")
         self.canvas_map.update_idletasks()
@@ -1077,12 +1081,23 @@ class HDDocApp(ttk.Window):
             a = total * i // self.n_cells if total else None
             b = total * (i + 1) // self.n_cells if total else None
             self.cell_span.append((a, b))
-        # 段 → 覆盖的格（字节重叠）；容量未知（total 为空）→ 广播到所有格
+        # 段 → 覆盖的格（字节重叠）；容量未知（total 为空）→ 广播到所有格。
+        # 快速扫描按"区域跨度"点亮而非抽样大小：抽样只有 16MB，若只点亮
+        # 样本覆盖的格，931GB 盘 117 个区域只有约 117/256 格有数据、其余
+        # 永久灰（用户反馈"有的块保持灰色"）。区域才是快速扫描的取样单位
+        # （旧版一格=一区域即此语义）：整区用区头抽样结果上色，悬停注明
+        # 抽样量与区域跨度。全段扫描第三元素为 None，按段大小点亮。
         self.seg_cells = []
-        for off, sz, _span in self.seg_meta:
-            rng = seg_cell_span(off, sz, total, self.n_cells)
-            self.seg_cells.append(list(range(self.n_cells)) if rng is None
-                                  else list(range(rng[0], rng[1] + 1)))
+        self.cell_region = [None] * self.n_cells
+        for i, (off, sz, span) in enumerate(self.seg_meta):
+            eff = span if span else sz
+            rng = seg_cell_span(off, eff, total, self.n_cells)
+            cells = (list(range(self.n_cells)) if rng is None
+                     else list(range(rng[0], rng[1] + 1)))
+            self.seg_cells.append(cells)
+            for c in cells:      # 格 → 供数段（边界格被多段覆盖时取最先的）
+                if self.cell_region[c] is None:
+                    self.cell_region[c] = i
         self.dirty.clear()
 
     def _add_seg_stat(self, cell_idx, ev):
@@ -1434,10 +1449,19 @@ class HDDocApp(ttk.Window):
                      a=fmt_bytes(a), b=fmt_bytes(b))
         bs = self.scan_bs or (self.summary or {}).get("bs") or 0
         if self.scan_quick:
-            # 快速扫描：只有落在抽样起点格里的格子有数据，其余格是
-            # "未抽样"（不是未扫描——整盘都计划了，只是没读）
+            # 快速扫描：格子颜色来自所在区域开头的抽样（整区点亮，见
+            # _reset_map）——悬停注明抽样量与区域跨度，避免误以为
+            # 整区都逐块读过；区域未抽样（停止过早/无数据）时明确标注
             if cell["median"] is not None:
-                txt += tr("gui.hover_sampled", sz=fmt_bytes(cell["n"] * bs))
+                src = (self.cell_region[idx]
+                       if idx < len(self.cell_region) else None)
+                if src is not None and src < len(self.seg_meta):
+                    _off, sample, region = self.seg_meta[src]
+                    txt += tr("gui.hover_region_src",
+                              sz=fmt_bytes(sample or 0),
+                              rg=fmt_bytes(region) if region else "?")
+                else:
+                    txt += tr("gui.hover_sampled", sz=fmt_bytes(cell["n"] * bs))
             else:
                 txt += tr("gui.hover_not_sampled")
         blk_start = (a // bs) if (a is not None and bs) else 0

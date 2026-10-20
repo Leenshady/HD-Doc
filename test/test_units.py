@@ -239,6 +239,24 @@ check("1TB/4G: 末段到第 255 格止", _spans[-1][1], N - 1)
 check("1TB/4G: 格全覆盖（段跨度并集覆盖全部格）",
       sum(b - a + 1 for a, b in _spans) >= N, True)
 
+# ---------- 快速扫描按区域跨度点亮：区域跨度必须铺满全部格 ----------
+# 用户实际场景（931.5GB 盘、4G 分段、16MB 抽样、4MB 块，见运行日志）：
+# 117 个区域每区只读开头 16MB。若按抽样大小点亮，16MB 只覆盖约 1 格
+# （每格 3.9GB）→ 约 117/256 格有数据、其余永久灰（"有的块保持灰色"）；
+# 按区域跨度点亮（区域才是取样单位）则整盘铺满、无灰格。
+_qcov = set()
+for _i, (_o, _s) in enumerate(q_segs):
+    _nxt = q_segs[_i + 1][0] if _i + 1 < len(q_segs) else HDD_1TB
+    _a, _b = H.seg_cell_span(_o, _nxt - _o, HDD_1TB, N)
+    _qcov.update(range(_a, _b + 1))
+check("快速扫描: 区域跨度铺满全部 256 格（无永久灰格）", len(_qcov), N)
+_scov = set()
+for _o, _s in q_segs:      # 反证：只按抽样大小点亮确实会露灰
+    _a, _b = H.seg_cell_span(_o, _s, HDD_1TB, N)
+    _scov.update(range(_a, _b + 1))
+check("快速扫描: 抽样大小仅覆盖少部分格（修复前灰格来源）",
+      len(_scov) < N, True)
+
 # ---------- 热力图颜色：四档（正常/偏慢/读取错误/未扫描），很慢档已取消 ----------
 # 读取错误必须是红色系；与偏慢金黄必须一眼可辨。
 def _rgb(h):
