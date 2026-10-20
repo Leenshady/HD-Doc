@@ -49,6 +49,16 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 
 ## 在 Ubuntu 上运行 GUI
 
+最快的方式是装打包好的安装包（见下文"打包 Ubuntu 安装包"）：
+
+```bash
+chmod +x HD_Doc-1.0-ubuntu.run
+sudo ./HD_Doc-1.0-ubuntu.run        # 自动装依赖、建 venv、注册菜单项
+hd-doc                              # 之后随时启动（应用菜单里搜 "HD Doc" 也行）
+```
+
+从源码运行：
+
 ```bash
 # 1. 安装依赖：tkinter（GUI）+ fio（IO 引擎）
 sudo apt update
@@ -137,6 +147,58 @@ python build_exe.py
 （`bundled` / `not bundled`）。Linux 打包出的可执行文件同样需要 root 才能
 扫物理磁盘：`sudo ./dist/HD_Doc`。
 
+## 打包 Ubuntu 安装包
+
+```
+python build_ubuntu_pkg.py
+```
+
+在**任意机器上**（包括 Windows）都能构建，产物在 `dist/`：
+
+| 文件 | 形态 | 用途 |
+|------|------|------|
+| `HD_Doc-1.0-ubuntu.run` | 自解压安装包 | 直接发给用户，一条命令装完 |
+| `HD_Doc-1.0-ubuntu.tar.gz` | 源码归档 | 手动解压安装、集成到部署流程 |
+| `*.sha256` | 校验和 | 传输完整性校验 |
+
+因为 PyInstaller 不能交叉编译，这里打的是**源码安装包**（纯 Python，与
+CPU 架构无关，x86_64 / arm64 通用）：安装时在目标机器上自动完成依赖检查、
+建 venv、装 ttkbootstrap、注册菜单项——不要求目标机提前有任何准备。
+
+安装包用法（Ubuntu 上）：
+
+```bash
+# 方式一：自解压安装包（推荐）
+chmod +x HD_Doc-1.0-ubuntu.run
+sudo ./HD_Doc-1.0-ubuntu.run            # 安装（-y 全自动不询问）
+sudo ./HD_Doc-1.0-ubuntu.run --uninstall   # 卸载（--uninstall --purge 连配置一起删）
+
+# 方式二：tar.gz
+tar xzf HD_Doc-1.0-ubuntu.tar.gz
+sudo ./HD_Doc-1.0/install.sh            # 安装
+sudo ./HD_Doc-1.0/uninstall.sh          # 卸载
+```
+
+安装过程会做的事：
+
+1. 检查 `python3 >= 3.8`、`tkinter`、`fio`，缺失的组件询问后 `apt` 安装
+   （`-y` 全自动；`--no-apt` 完全不动 apt；`--no-fio` 跳过 fio）
+2. 复制程序到 `/opt/hd-doc`（`--prefix DIR` 可改），建 venv 装
+   `requirements.txt`；venv 不可用时自动回退系统 Python
+3. 生成启动器 `/usr/local/bin/hd-doc`（GUI/CLI 统一入口）、桌面菜单项
+   和图标；实际安装路径记入 `/var/lib/hd-doc/install.manifest`，
+   卸载时按清单清理（自定义目录也能干净卸载）
+
+改打包内容后重新构建 + 自检：
+
+```bash
+python build_ubuntu_pkg.py && python packaging/ubuntu/validate_pkg.py
+```
+
+`validate_pkg.py` 会校验归档完整性（文件树/权限位/LF 行尾/无重复成员）、
+`.run` 解包链路、sha256、双语 key 一致性，并以打桩 `id`/`python3` 的方式
+**模拟完整安装与卸载**（全程只写临时目录，不碰系统 `/opt`、`/usr`）。
+
 ## 测试
 
 ```
@@ -163,7 +225,9 @@ HD_Doc_core.py  业务逻辑：提权、分段、fio 引擎、报告导出
 HD_Doc_cli.py   命令行前端（仅英文）
 HD_Doc_gui.py   ttkbootstrap 界面（中英双语，浅色/深色主题）
 HD_Doc.py       入口：分发到 CLI 或 GUI
-build_exe.py    PyInstaller 打包
+build_exe.py    PyInstaller 打包（Windows/Linux 单文件可执行程序）
+build_ubuntu_pkg.py   Ubuntu 安装包打包（.run 自解压 + .tar.gz）
+packaging/ubuntu/    安装脚本（install.sh / uninstall.sh）与安装包校验
 requirements.txt  运行依赖（ttkbootstrap，GUI 需要）
 lang/           界面文案（en.json、zh.json）
 img/            程序图标（HD_Doc.ico、HD_Doc.png）

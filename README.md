@@ -57,6 +57,17 @@ Without it, no files are written. `--help` lists all options.
 
 ## Running the GUI on Ubuntu
 
+The quickest path is the prebuilt install package (see "Build the Ubuntu
+install package" below):
+
+```bash
+chmod +x HD_Doc-1.0-ubuntu.run
+sudo ./HD_Doc-1.0-ubuntu.run        # installs dependencies, venv, menu entry
+hd-doc                              # launch any time (or search "HD Doc" in the app menu)
+```
+
+From source:
+
 ```bash
 # 1. Install dependencies: tkinter (GUI) + fio (IO engine)
 sudo apt update
@@ -157,6 +168,66 @@ and PyInstaller, plus `pip install ttkbootstrap` (see
 (`bundled` / `not bundled`). A Linux build still needs root for physical
 disks: `sudo ./dist/HD_Doc`.
 
+## Build the Ubuntu install package
+
+```
+python build_ubuntu_pkg.py
+```
+
+Builds on **any machine** (Windows included) and puts the results in
+`dist/`:
+
+| File | Form | Use |
+|------|------|-----|
+| `HD_Doc-1.0-ubuntu.run` | self-extracting installer | hand it to users; one command installs |
+| `HD_Doc-1.0-ubuntu.tar.gz` | source archive | manual install, or fold into your deployment |
+| `*.sha256` | checksums | transfer integrity |
+
+Since PyInstaller cannot cross-compile, this is a **source install
+package** (pure Python, architecture independent — x86_64 and arm64
+alike): on the target machine it checks dependencies, creates a venv,
+installs ttkbootstrap and registers the menu entry. Nothing needs to be
+prepared on the target machine.
+
+Using the package (on Ubuntu):
+
+```bash
+# Option 1: self-extracting installer (recommended)
+chmod +x HD_Doc-1.0-ubuntu.run
+sudo ./HD_Doc-1.0-ubuntu.run                 # install (-y for unattended)
+sudo ./HD_Doc-1.0-ubuntu.run --uninstall     # uninstall (--uninstall --purge also removes config)
+
+# Option 2: tarball
+tar xzf HD_Doc-1.0-ubuntu.tar.gz
+sudo ./HD_Doc-1.0/install.sh                 # install
+sudo ./HD_Doc-1.0/uninstall.sh               # uninstall
+```
+
+What the installer does:
+
+1. Checks `python3 >= 3.8`, `tkinter` and `fio`; missing pieces are
+   installed via `apt` after a prompt (`-y` skips the prompt, `--no-apt`
+   never touches apt, `--no-fio` skips fio)
+2. Copies the program to `/opt/hd-doc` (`--prefix DIR` to change it) and
+   creates a venv with `requirements.txt`; falls back to the system
+   Python automatically if a venv is not possible
+3. Writes the launcher `/usr/local/bin/hd-doc` (one entry point for GUI
+   and CLI), the desktop menu entry and the icon; the actual install
+   paths are recorded in `/var/lib/hd-doc/install.manifest` so that
+   uninstall cleans up correctly even for a custom prefix
+
+After changing the packaged content, rebuild and self-check:
+
+```bash
+python build_ubuntu_pkg.py && python packaging/ubuntu/validate_pkg.py
+```
+
+`validate_pkg.py` verifies archive integrity (file tree, permission
+bits, LF line endings, no duplicate members), the `.run` extraction
+chain, sha256 sums and bilingual key parity, and runs a **simulated
+install and uninstall** with stubbed `id`/`python3` — everything stays
+in a temp directory, your system `/opt` and `/usr` are never touched.
+
 ## Tests
 
 ```
@@ -183,7 +254,9 @@ HD_Doc_core.py  business logic: elevation, segments, fio engine, reports
 HD_Doc_cli.py   command-line front end (English only)
 HD_Doc_gui.py   ttkbootstrap GUI (bilingual, light/dark theme)
 HD_Doc.py       entry point: dispatches to CLI or GUI
-build_exe.py    PyInstaller packaging
+build_exe.py    PyInstaller packaging (Windows/Linux single-file executables)
+build_ubuntu_pkg.py  Ubuntu install package builder (.run + .tar.gz)
+packaging/ubuntu/    installer scripts (install.sh / uninstall.sh) and package validator
 requirements.txt  runtime dependencies (ttkbootstrap, for the GUI)
 lang/           interface strings (en.json, zh.json)
 img/            program icon (HD_Doc.ico, HD_Doc.png)
