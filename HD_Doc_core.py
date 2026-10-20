@@ -456,10 +456,25 @@ def is_admin():
 
 
 def is_physical_target(target):
-    """是否是 Windows 物理磁盘路径（打开它必须具有管理员权限）"""
-    if not IS_WIN:
-        return False
+    r"""是否是物理磁盘设备（打开它必须具有管理员/root 权限）
+
+    Windows: \\.\PhysicalDriveN；Linux: /dev/ 下的块设备（sda/nvme0n1/vdb…）。
+    手动输入路径时 is_admin 检查与自动提权都依赖此判定，Linux 侧漏掉
+    会直接以标准用户扫 /dev/sda，fio 打开设备失败、每块报错。
+    """
     t = str(target).strip()
+    if not IS_WIN:
+        if not t.startswith("/dev/"):
+            return False
+        # 伪设备（/dev/null、/dev/zero 等）不需要提权，也不该扫——按非
+        # 物理盘放行，让 fio 的报错说话
+        try:
+            import stat
+            return stat.S_ISBLK(os.stat(t).st_mode)
+        except OSError:
+            # /dev/ 下但打不开（不存在/无权限 stat）：按物理盘处理，
+            # 由权限检查与 fio 给出明确错误，而不是静默跳过提权
+            return True
     return bool(DRIVE_PATH_RE.match(t) or t.lower().startswith("//./")
                 or re.match(r"^physicaldrive\d+$", t, re.I))
 
@@ -597,6 +612,35 @@ def request_elevation(argv=None, wait=False, gui=False):
                 return (True, None, None)
         except AttributeError:
             pass
+        if gui:
+            # GUI 场景（Tk，通常无控制终端）：同步 sudo 会因 "no tty present
+            # and no askpass program" 失败，且 subprocess.call 阻塞界面线程
+            # 直到子进程结束——必须异步。改用 pkexec（Ubuntu 桌面默认自带，
+            # 走 polkit 弹图形密码框），启动后本进程随即退出。
+            pkexec = shutil.which("pkexec")
+            if not pkexec:
+                return (False, None, tr("err.no_pkexec"))
+            if getattr(sys, "frozen", False):
+                prog, rest = sys.executable, argv[1:]
+            else:
+                prog = sys.executable or "python3"
+                rest = [os.path.abspath(argv[0])] + argv[1:]
+            # pkexec 默认不继承图形会话变量（否则 root 进程连不上 X/Wayland）；
+            # DISPLAY/XAUTHORITY/WAYLAND_DISPLAY/XDG_RUNTIME_DIR 需显式透传
+            env_args = []
+            for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
+                      "XDG_RUNTIME_DIR"):
+                v = os.environ.get(k)
+                if v:
+                    env_args.append("%s=%s" % (k, v))
+            try:
+                subprocess.Popen(
+                    [pkexec, "env"] + env_args + [prog] + rest,
+                    start_new_session=True,   # 脱离本进程组：父进程退出不影响
+                    cwd=os.getcwd())
+                return (True, None, None)
+            except Exception as e:
+                return (False, None, str(e))
         sudo = shutil.which("sudo")
         if not sudo:
             return (False, None, tr("err.no_sudo"))
@@ -1232,9 +1276,12 @@ def bundled_fio_path():
     --version 据此如实报告 fio 来源。
     """
     if getattr(sys, "frozen", False):
-        p = os.path.join(getattr(sys, "_MEIPASS", ""), "fio.exe")
-        if os.path.isfile(p):
-            return p
+        # Windows 构建随包分发 fio.exe；Linux 构建随包分发 fio（无后缀）
+        for exe in ("fio.exe" if IS_WIN else "fio",
+                    "fio" if IS_WIN else "fio.exe"):
+            p = os.path.join(getattr(sys, "_MEIPASS", ""), exe)
+            if os.path.isfile(p):
+                return p
     return None
 
 
@@ -1399,6 +1446,104 @@ def _ps_disk_info():
         return {}
 
 
+# ---------------------------------------------------------------- Linux 磁盘枚举
+# /dev/sda、/dev/nvme0n1、/dev/vdb…；lsblk -d 已过滤分区，只列整盘。
+# MODEL 为空时用 gui.disk_n 兜底名（与 Windows 侧 list_drives 的返回结构一致）。
+def _parse_lsblk_json(text):
+    """解析 `lsblk -b -J -d -o NAME,SIZE,MODEL,TRAN` 的 JSON 输出。
+
+    返回 [{name, size, model, tran}]；size 非正整数时置 None（容忍 "0B"
+    之类的异常输出）。纯函数，便于单测（不依赖 lsblk 是否安装）。
+    """
+    try:
+        doc = json.loads(text)
+    except Exception:
+        return []
+    out = []
+    for dev in doc.get("blockdevices") or []:
+        name = str(dev.get("name") or "").strip()
+        if not name:
+            continue
+        size = dev.get("size")
+        try:
+            size = int(size) if size is not None else None
+        except (TypeError, ValueError):
+            size = None
+        if size is not None and size <= 0:
+            size = None
+        model = str(dev.get("model") or "").strip()
+        tran = str(dev.get("tran") or "").strip()
+        out.append({"name": name, "size": size,
+                    "model": model or None, "tran": tran or None})
+    return out
+
+
+def _sys_block_drives():
+    """/sys/block 兜底枚举（无 lsblk 的环境）：返回 [{name, size, model, tran}]"""
+    out = []
+    base = "/sys/block"
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        # 只收整盘：排除 loop*/ram*/dm-*（loop 设备/内存盘/设备映射）
+        if name.startswith(("loop", "ram", "dm-", "md", "zram")):
+            continue
+        d = os.path.join(base, name)
+        size = None
+        try:
+            with open(os.path.join(d, "size"), "r", encoding="ascii") as f:
+                # /sys/block/*/size 单位是 512 字节的扇区数
+                sectors = int(f.read().strip())
+                size = sectors * 512 if sectors > 0 else None
+        except (OSError, ValueError):
+            pass
+        model = None
+        try:
+            with open(os.path.join(d, "device", "model"), "r",
+                      encoding="ascii", errors="replace") as f:
+                model = f.read().strip() or None
+        except OSError:
+            pass
+        tran = None
+        try:
+            with open(os.path.join(d, "queue", "rotational"), "r",
+                      encoding="ascii") as f:
+                # 无 tran 信息时用盘类型近似：SSD 多走 NVMe/SATA，HDD 机械
+                tran = "0" if f.read().strip() == "1" else None
+        except OSError:
+            pass
+        out.append({"name": name, "size": size, "model": model, "tran": tran})
+    return out
+
+
+def _linux_list_drives():
+    """枚举 Linux 物理磁盘（lsblk 优先，/sys/block 兜底）。
+
+    返回与 Windows 侧同构的 [{index, path, size, model, bus}]，path 形如
+    /dev/sda；index 从 0 递增（仅用于 gui.disk_n 兜底名，无语义）。
+    """
+    devs = []
+    try:
+        p = subprocess.run(
+            ["lsblk", "-b", "-J", "-d", "-o", "NAME,SIZE,MODEL,TRAN"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=20)
+        if p.returncode == 0:
+            devs = _parse_lsblk_json(p.stdout or "")
+    except Exception:
+        devs = []
+    if not devs:
+        devs = _sys_block_drives()
+    drives = []
+    for i, d in enumerate(devs):
+        drives.append({"index": i, "path": "/dev/" + d["name"],
+                       "size": d["size"], "model": d["model"] or "",
+                       "bus": d.get("tran")})
+    return drives
+
+
 def list_drives():
     """枚举物理磁盘，返回 [{index, path, size, model, bus}]"""
     drives = {}
@@ -1420,6 +1565,8 @@ def list_drives():
                     sz, model, _iface = ps[i]
                     d["size"] = d["size"] or sz
                     d["model"] = d["model"] or model
+    else:
+        drives = {d["index"]: d for d in _linux_list_drives()}
     return [drives[k] for k in sorted(drives)]
 
 
@@ -1438,6 +1585,17 @@ def query_target_size(target):
                 if i in info and info[i][0]:
                     return info[i][0]
         return None
+    # Linux 块设备：st_size 恒为 0（不是设备容量），必须 lseek(SEEK_END)。
+    # O_RDONLY 打开块设备无需 root（读数据才要），lseek 只需打开成功。
+    if not IS_WIN and t.startswith("/dev/"):
+        try:
+            fd = os.open(t, os.O_RDONLY)
+            try:
+                return os.lseek(fd, 0, os.SEEK_END)
+            finally:
+                os.close(fd)
+        except OSError:
+            return None
     if os.path.exists(t):
         try:
             return os.path.getsize(t)

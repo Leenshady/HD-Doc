@@ -92,6 +92,10 @@ def ensure_admin_at_startup():
         刷新磁盘列表都不需要管理员；物理盘扫描入口还会再提权）。
     --no-elevate / HDTUNE_NO_AUTO_ELEVATE=1 关闭自动提权时直接返回
     False（照常启动，界面保留"以管理员重启"按钮）。
+
+    Linux/其他平台没有 UAC，此处直接放行：启动日志与界面提示会指引
+    sudo / pkexec 路线（见 _startup_admin_check 与 gui.log.not_admin_linux）；
+    root 已运行时 is_admin() 为 True，同样直接放行。
     """
     if is_admin() or not IS_WIN or not auto_elevate_enabled():
         return False
@@ -529,7 +533,8 @@ class HDDocApp(ttk.Window):
         self.lbl_admin.pack(side="left", padx=(16, 0))
         self.btn_elevate = self._reg(ttk.Button(btn_bar,
                                                 command=self._relaunch_elevated),
-                                     "gui.relaunch")
+                                     "gui.relaunch" if IS_WIN
+                                     else "gui.relaunch_linux")
         self.btn_elevate.pack(side="left", padx=6)
         self.btn_elevate.pack_forget()
 
@@ -743,7 +748,7 @@ class HDDocApp(ttk.Window):
 
     def _browse_fio(self):
         p = filedialog.askopenfilename(title=tr("gui.fio_path"),
-                                       filetypes=[("fio", "fio.exe fio"),
+                                       filetypes=[("fio", "fio"),
                                                   ("All", "*.*")])
         if p:
             self.var_fio.set(p)
@@ -820,20 +825,24 @@ class HDDocApp(ttk.Window):
         if is_admin():
             self._log("info", "gui.log.admin_ok")
             return
-        self._log("warn", "gui.log.not_admin")
+        self._log("warn", "gui.log.not_admin" if IS_WIN
+                  else "gui.log.not_admin_linux")
         # 提权已在启动时由入口 ensure_admin_at_startup 处理（UAC 在窗口
         # 出现前弹出）。能运行到这里只有两种情况：用户在 UAC 选了"否"，
         # 或用 --no-elevate / HDTUNE_NO_AUTO_ELEVATE=1 关闭了自动提权。
         # 两者都保持标准权限继续运行，需要时点界面上的"以管理员重启"。
+        # （Linux 没有 UAC：ensure_admin_at_startup 直接放行，这里统一
+        #  指引 sudo / pkexec 路线；启动时的自动提权只发生在 Windows。）
 
     def _relaunch_elevated(self):
-        # gui=True：提权子进程用 pythonw.exe 启动，不再伴随命令窗口
+        # gui=True：Windows 提权子进程用 pythonw.exe 启动，不再伴随命令窗口；
+        # Linux 走 pkexec 异步启动（无 tty，同步 sudo 会卡死界面）
         ok, _code, err = request_elevation(wait=False, gui=True)
         if not ok:
             self._banner("gui.msg.elevate_failed", "error", err=err or "?")
             self._log("error", "gui.msg.elevate_failed", err=err or "?")
             return
-        if not _pythonw_path():
+        if IS_WIN and not _pythonw_path():
             self._log("warn", "gui.log.no_pythonw")
         self._log("info", "gui.log.elevate_requested")
         core.log_event("elevate: requesting administrator relaunch (gui=True)")
@@ -877,8 +886,10 @@ class HDDocApp(ttk.Window):
             else:
                 # 明确关闭了自动提权（--no-elevate）：只提示不弹窗，
                 # 由用户点"以管理员重启"或去掉该参数重试
-                self._banner("gui.msg.admin_needed", "warn", t=target)
-                self._log("warn", "gui.msg.admin_needed", t=target)
+                self._banner("gui.msg.admin_needed" if IS_WIN
+                             else "gui.msg.admin_needed_linux", "warn", t=target)
+                self._log("warn", "gui.msg.admin_needed" if IS_WIN
+                          else "gui.msg.admin_needed_linux", t=target)
             return
         fio = resolve_fio(self.var_fio.get().strip())
         if not os.path.isfile(fio):

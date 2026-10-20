@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""build_exe.py —— 把 HD_Doc.py 打包成 Windows 单文件可执行程序（HD Doc）
+"""build_exe.py —— 把 HD_Doc.py 打包成单文件可执行程序（HD Doc）
+
+Windows 产物为 .exe；在 Ubuntu/Linux 上运行同一脚本则产出无后缀的 Linux
+可执行文件（PyInstaller 按运行平台交叉，不能在 Windows 上打出 Linux 包）。
 
 用法（在装有 PyInstaller 的 Python 环境里运行，GUI 打包需要该 Python 带 tkinter）：
     python build_exe.py                # 一次打出两个变体 → dist/
-    python build_exe.py --variant fio  # 只打 dist/HD_Doc.exe（自带 fio）
-    python build_exe.py --variant nofio# 只打 dist/HD_Doc_NoFio.exe（不含 fio）
+    python build_exe.py --variant fio  # 只打 dist/HD_Doc（自带 fio）
+    python build_exe.py --variant nofio# 只打 dist/HD_Doc_NoFio（不含 fio）
     python build_exe.py --onedir       # 目录模式（启动更快，分发整个文件夹）
 
-两个变体的区别只在 fio.exe 是否随包分发：
-  dist/HD_Doc.exe       自带 fio（单文件里压缩后约 +2.3MB），拷到没装
-                        fio 的电脑也能直接扫
-  dist/HD_Doc_NoFio.exe 不含 fio，运行时用系统 fio 或在 GUI/CLI 里
-                        --fio 指定路径；--version 会如实报告 fio 来源
+两个变体的区别只在 fio 是否随包分发：
+  dist/HD_Doc       自带 fio（Windows 约 +2.3MB），拷到没装 fio 的电脑
+                    也能直接扫
+  dist/HD_Doc_NoFio 不含 fio，运行时用系统 fio 或在 GUI/CLI 里 --fio
+                    指定路径；--version 会如实报告 fio 来源
 两者都内置 lang/ 语言文件与图标，运行时行为完全一致。
+Linux 下自带 fio 的变体依赖系统已安装 fio（打包时 --add-binary 收入）。
 
 其他说明：
   - --windowed（GUI 子系统）：双击运行不会出现黑色控制台窗口；在命令行里
@@ -22,6 +26,8 @@
   - lang/ 语言文件一并打入（--add-data），界面文案在打包版同样可用
   - GUI 基于 ttkbootstrap：--collect-all ttkbootstrap 收齐其子模块与
     静态资源（复选框/进度条元素图、图标字体），否则打包版控件会缺图
+  - --add-data/--add-binary 的路径分隔符按平台取 os.pathsep
+    （Windows 为 ";"，Linux 为 ":"），本脚本在哪个系统上跑就打哪个平台的包
   - 本脚本只负责调用 PyInstaller，打包逻辑（隐藏导入等）都写在命令行参数里
 """
 import argparse
@@ -36,6 +42,10 @@ LANG_DIR = os.path.join(HERE, "lang")
 IMG_DIR = os.path.join(HERE, "img")
 BASE_NAME = "HD_Doc"
 NOFIO_NAME = "HD_Doc_NoFio"
+IS_WIN = sys.platform.startswith("win")
+EXE_SUFFIX = ".exe" if IS_WIN else ""
+# PyInstaller --add-data/--add-binary 的 "src;dst" 分隔符随平台变化
+SEP = os.pathsep
 
 # 与 HD_Doc.resolve_fio 一致的候选列表（打包时用于 --add-binary）
 FIO_CANDS = (
@@ -44,6 +54,8 @@ FIO_CANDS = (
     os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links\fio.exe"),
     r"C:\msys64\usr\bin\fio.exe",
     r"C:\msys32\usr\bin\fio.exe",
+    "/usr/bin/fio",
+    "/usr/local/bin/fio",
 )
 
 
@@ -71,17 +83,17 @@ def build_variant(name, with_fio, onedir):
     if with_fio:
         fio = find_fio()
         if fio:
-            # 目标名 ".: fio.exe" → 解压后位于 sys._MEIPASS/fio.exe
+            # 目标名 ".: fio(.exe)" → 解压后位于 sys._MEIPASS/fio(.exe)
             # （HD_Doc.resolve_fio 在 frozen 时优先查这里）
-            cmd += ["--add-binary", "%s;." % fio]
+            cmd += ["--add-binary", "%s%s." % (fio, SEP)]
             print("[信息] 将内置 fio: %s（%.1f MB）"
                   % (fio, os.path.getsize(fio) / 1048576.0))
         else:
-            print("[警告] 未找到 fio.exe，%s 变体将不自带 fio；" % name)
+            print("[警告] 未找到 fio，%s 变体将不自带 fio；" % name)
             print("        运行时需在 GUI 里指定 fio 路径，或系统已安装 fio。")
     if os.path.isdir(LANG_DIR):
         # lang/en.json、lang/zh.json → 解压后位于 sys._MEIPASS/lang/
-        cmd += ["--add-data", "%s;lang" % LANG_DIR]
+        cmd += ["--add-data", "%s%slang" % (LANG_DIR, SEP)]
         print("[信息] 将内置语言文件: %s" % LANG_DIR)
     else:
         print("[警告] 未找到 %s，打包版将无界面文案" % LANG_DIR)
@@ -91,10 +103,10 @@ def build_variant(name, with_fio, onedir):
         cmd += ["--icon", icon]
         print("[信息] 将使用程序图标: %s" % icon)
     else:
-        print("[警告] 未找到 %s，exe 与窗口将使用默认图标" % icon)
+        print("[警告] 未找到 %s，程序与窗口将使用默认图标" % icon)
     if os.path.isdir(IMG_DIR):
         # img/ → 解压后位于 sys._MEIPASS/img/（窗口标题栏/任务栏图标）
-        cmd += ["--add-data", "%s;img" % IMG_DIR]
+        cmd += ["--add-data", "%s%simg" % (IMG_DIR, SEP)]
     cmd.append(APP)
 
     print("[信息] 执行: %s\n" % " ".join(cmd))
@@ -102,22 +114,27 @@ def build_variant(name, with_fio, onedir):
     if r != 0:
         print("[错误] PyInstaller 对 %s 退出码 %d" % (name, r))
         return None
-    exe = os.path.join(HERE, "dist", name + ".exe")
+    exe = os.path.join(HERE, "dist", name + EXE_SUFFIX)
     if os.path.isfile(exe):
         print("\n[完成] %s（%.1f MB）"
               % (exe, os.path.getsize(exe) / 1048576.0))
         print("        %s --version" % exe)
-        print("        %s --cli --target \\\\.\\PhysicalDrive1 --quick\n" % exe)
+        if IS_WIN:
+            print("        %s --cli --target \\\\.\\PhysicalDrive1 --quick\n" % exe)
+        else:
+            print("        sudo %s --cli --target /dev/sda --quick\n" % exe)
         return exe
     print("[错误] 未找到产物 %s" % exe)
     return None
 
 
 def main():
-    ap = argparse.ArgumentParser(description="打包 HD Doc 为 Windows 可执行文件")
+    ap = argparse.ArgumentParser(
+        description="打包 HD Doc 为单文件可执行程序"
+                    "（Windows 产物 .exe；Linux 产物无后缀）")
     ap.add_argument("--variant", choices=("fio", "nofio", "all"), default="all",
-                    help="fio=自带 fio 的 HD_Doc.exe；nofio=不含 fio 的 "
-                         "HD_Doc_NoFio.exe；all=两个都打（默认）")
+                    help="fio=自带 fio 的 HD_Doc；nofio=不含 fio 的 "
+                         "HD_Doc_NoFio；all=两个都打（默认）")
     ap.add_argument("--onedir", action="store_true",
                     help="目录模式打包（默认单文件 onefile）")
     args = ap.parse_args()
@@ -137,7 +154,8 @@ def main():
         import tkinter  # noqa: F401
     except ImportError:
         print("[错误] 当前 Python 没有 tkinter，打不了的 GUI 版。")
-        print("       请换用 python.org 安装包自带的 Python（默认包含 tkinter）。")
+        print("       Windows: 换用 python.org 安装包自带的 Python（自带 tkinter）")
+        print("       Ubuntu:  sudo apt install python3-tk")
         return 2
     try:
         import ttkbootstrap  # noqa: F401

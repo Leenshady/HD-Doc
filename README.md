@@ -48,12 +48,42 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 Scanning a physical disk needs administrator rights. The GUI asks for
 elevation via UAC right at startup — before the window appears, not when
 a scan starts; declining keeps the program running unelevated (image
-files still work). The CLI asks when a physical disk is scanned. Disable
-the automatic request with `--no-elevate`. Image files need no special
-rights.
+files still work). The CLI asks when a physical disk is scanned. On Linux
+the equivalent is root (see below). Disable the automatic request with
+`--no-elevate`. Image files need no special rights.
 
 `--export [DIR]` writes the report into `DIR/HD_Doc_report_<timestamp>/`.
 Without it, no files are written. `--help` lists all options.
+
+## Running the GUI on Ubuntu
+
+```bash
+# 1. Install dependencies: tkinter (GUI) + fio (IO engine)
+sudo apt update
+sudo apt install python3-tk fio
+
+# 2. Install ttkbootstrap (a venv is recommended over system Python)
+python3 -m venv ~/.venv/hddoc && ~/.venv/hddoc/bin/pip install -r requirements.txt
+
+# 3. Start (root is required for physical disks; not for image files)
+sudo ~/.venv/hddoc/bin/python HD_Doc.py        # from a terminal as root (recommended)
+./HD_Doc.py                                    # or without sudo: image files / just looking
+```
+
+Notes:
+
+- The target dropdown lists whole disks automatically (`/dev/sda`,
+  `/dev/nvme0n1`, `/dev/vdb`, ... with model and capacity), same experience
+  as on Windows; you can also type a device path by hand
+- Physical disks require root: fio must open the block device as root.
+  When started unelevated the UI says so — click **"Restart as root"**
+  in the button bar (pkexec graphical authorization, standard on the
+  Ubuntu desktop); without pkexec, run `sudo python3 HD_Doc.py` from a
+  terminal as instructed
+- Image files (e.g. `dd` output) need no root — just pick the file
+- The default engine is `libaio` (ships with the usual fio builds); some
+  minimal builds only offer `psync`/`posixaio` — switch it in the dropdown,
+  available engines are probed automatically
 
 ## Language files
 
@@ -103,25 +133,29 @@ this one file when reporting a problem.
 Logging never raises: an unwritable path is silently ignored, so it can
 not break a scan.
 
-## Build the Windows executable
+## Build the executable
 
 ```
 python build_exe.py
 ```
 
-Produces two single-file variants in `dist/`:
+Produces two single-file variants in `dist/`, for whichever platform the
+script runs on (PyInstaller does not cross-compile):
 
-| File | fio | Size | Use when |
-|------|-----|------|----------|
-| `HD_Doc.exe` | bundled | ~31 MB | distributing to machines without fio |
-| `HD_Doc_NoFio.exe` | not bundled | ~29 MB | fio is already installed, or you pass `--fio PATH` |
+| Platform | File | fio | Size | Use when |
+|----------|------|-----|------|----------|
+| Windows | `HD_Doc.exe` | bundled | ~31 MB | distributing to machines without fio |
+| Windows | `HD_Doc_NoFio.exe` | not bundled | ~29 MB | fio is already installed, or you pass `--fio PATH` |
+| Linux | `HD_Doc` | bundled (needs fio on the build machine) | ~35 MB | run on Ubuntu without a Python environment |
+| Linux | `HD_Doc_NoFio` | not bundled | ~33 MB | fio is already installed, or you pass `--fio PATH` |
 
 Both bundle the `lang/` files and the `img/` icon; runtime behavior is
 identical. `--variant fio` / `--variant nofio` builds just one,
 `--onedir` switches to directory mode. Requires a Python with tkinter
 and PyInstaller, plus `pip install ttkbootstrap` (see
 `requirements.txt`). `--version` reports where fio comes from
-(`bundled` / `not bundled`).
+(`bundled` / `not bundled`). A Linux build still needs root for physical
+disks: `sudo ./dist/HD_Doc`.
 
 ## Tests
 
@@ -137,8 +171,9 @@ python test/test_gui_gate.py       # elevation gate in GUI
 python test/test_hdd_stop.py       # real hardware mid-scan stop
 ```
 
-The fio-based suites need `fio` on the machine (`C:\Program Files\fio\fio.exe`
-is picked up automatically).
+The fio-based suites need `fio` on the machine (on Windows
+`C:\Program Files\fio\fio.exe` is picked up automatically; on Linux the
+`fio` on PATH or `/usr/bin/fio`).
 
 ## Layout
 

@@ -18,6 +18,14 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --limit-mb 64   # 只扫前 64MB（试扫）
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --no-elevate    # 禁止自动提权
 
+  Linux / Ubuntu（同样支持 GUI）：
+  sudo apt install python3-tk fio && pip install -r requirements.txt
+  sudo python3 HD_Doc.py                                     # GUI（root 才能扫物理盘）
+  python3 HD_Doc.py --cli --target /dev/sda --quick          # 扫 NVMe/ATA 盘
+  python3 HD_Doc.py --cli --target ./test.img --bs 4M        # 扫镜像文件（无需 root）
+  物理盘在 Linux 上形如 /dev/sda、/dev/nvme0n1；非 root 启动时界面会指引
+  pkexec / sudo 路线（见 HD_Doc_core.request_elevation）。
+
 打包成 Windows 可执行文件
   python build_exe.py          # PyInstaller 单文件打包，一次产出两个变体：
    - dist/HD_Doc.exe       自带 fio.exe（6.5MB），拷到没装 fio 的电脑也能用
@@ -33,7 +41,9 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
     GUI 模式在程序启动时即申请提权（弹一次 UAC，不再等扫描时再问；
     取消则保持标准权限继续运行）；CLI 模式在扫描物理盘时申请
     （--no-elevate 或环境变量 HDTUNE_NO_AUTO_ELEVATE=1 可关闭该行为；
-    扫描镜像文件无需管理员）
+    扫描镜像文件无需管理员）。Linux 上对应 root 权限：GUI 非 root 启动
+    时界面会提示，并可经 pkexec 图形授权重启（无 pkexec 则指引终端
+    sudo python3 HD_Doc.py）。
   - 提权重启的子进程使用 pythonw.exe（GUI 子系统）启动，不会再伴随
     命令窗口；CLI 模式提权后输出会自动绑回原终端
   - 运行日志：关键事件（启动/扫描开始与结果/导出/偏好切换）与异常堆栈
@@ -62,7 +72,8 @@ def build_parser():
     ap.add_argument("--version", action="store_true",
                     help="show version and exit")
     ap.add_argument("--target",
-                    help="scan target: \\\\.\\PhysicalDriveN or an image file path")
+                    help="scan target: \\\\.\\PhysicalDriveN, /dev/sda, "
+                         "or an image file path")
     ap.add_argument("--bs", default="auto",
                     help="block size, e.g. 4M / 512K / auto (default: auto)")
     ap.add_argument("--segment-gb", type=float, default=4.0,

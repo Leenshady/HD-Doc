@@ -344,6 +344,102 @@ else:
     print("  [跳过] 环境无 fio，跳过引擎实测")
 check("不存在的 fio 探测返回 None", H.list_fio_engines("Z:/nope/fio.exe"), None)
 
+# ---------- Linux 设备枚举（Ubuntu GUI 运行适配） ----------
+class _FakeStat:
+    """假 stat 结果：只带 st_mode（测试 is_physical_target 的设备类型分支）"""
+    def __init__(self, mode):
+        self.st_mode = mode
+
+
+_LSBLK_JSON = """{
+  "blockdevices": [
+    {"name": "sda", "size": 1000204886016, "model": "WDC WD10EZEX-22MFCA0", "tran": "sata"},
+    {"name": "nvme0n1", "size": 500107862016, "model": "Samsung SSD 980", "tran": "nvme"},
+    {"name": "sdb", "size": "0", "model": null, "tran": "usb"}
+  ]
+}"""
+_d = H._parse_lsblk_json(_LSBLK_JSON)
+check("lsblk 解析: 三块盘", len(_d), 3)
+check("lsblk 解析: sda 容量", _d[0]["size"], 1000204886016)
+check("lsblk 解析: sda 型号", _d[0]["model"], "WDC WD10EZEX-22MFCA0")
+check("lsblk 解析: nvme 总线", _d[1]["tran"], "nvme")
+check("lsblk 解析: size=0 → None（伪设备/异常输出）", _d[2]["size"], None)
+check("lsblk 解析: model 空 → None", _d[2]["model"], None)
+check("lsblk 解析: 坏 JSON → []", H._parse_lsblk_json("{not json"), [])
+check("lsblk 解析: 空输出 → []", H._parse_lsblk_json(""), [])
+check("lsblk 解析: 无 blockdevices → []",
+      H._parse_lsblk_json('{"blockdevices": []}'), [])
+check("lsblk 解析: 无 name 跳过",
+      H._parse_lsblk_json('{"blockdevices": [{"size": 100}]}'), [])
+
+# list_drives 的 Linux 分支：patch IS_WIN + _linux_list_drives，验证透传
+import unittest.mock as _mock
+try:
+    _saved_win = H.IS_WIN
+    H.IS_WIN = False
+    with _mock.patch.object(H, "_linux_list_drives",
+                            return_value=[{"index": 0, "path": "/dev/sda",
+                                           "size": 999, "model": "M1", "bus": "sata"},
+                                          {"index": 1, "path": "/dev/nvme0n1",
+                                           "size": 500, "model": "M2", "bus": "nvme"}]):
+        _ld = H.list_drives()
+    check("list_drives(Linux) 透传枚举结果", _ld,
+          [{"index": 0, "path": "/dev/sda", "size": 999, "model": "M1", "bus": "sata"},
+           {"index": 1, "path": "/dev/nvme0n1", "size": 500, "model": "M2", "bus": "nvme"}])
+    # is_physical_target：Linux 上 /dev/ 块设备算物理盘（触发 root 检查）
+    check("物理磁盘识别(Linux /dev/sda)", H.is_physical_target("/dev/sda"), True)
+    check("物理磁盘识别(Linux /dev/nvme0n1)", H.is_physical_target("/dev/nvme0n1"), True)
+    check("物理磁盘识别(Linux 普通文件)", H.is_physical_target("/home/u/test.img"), False)
+    check("物理磁盘识别(Linux /tmp)", H.is_physical_target("/tmp"), False)
+    with _mock.patch.object(H.os, "stat",
+                            side_effect=lambda p: _FakeStat(0o020000)):  # S_IFCHR
+        check("物理磁盘识别(Linux /dev/null 字符设备不算)",
+              H.is_physical_target("/dev/null"), False)
+    with _mock.patch.object(H.os, "stat",
+                            side_effect=lambda p: _FakeStat(0o060000)):  # S_IFBLK
+        check("物理磁盘识别(Linux 块设备)",
+              H.is_physical_target("/dev/sda"), True)
+    # query_target_size：Linux 块设备 st_size 恒 0，必须 lseek(SEEK_END)
+    with _mock.patch.object(H.os, "open", return_value=7), \
+         _mock.patch.object(H.os, "lseek", return_value=1000204886016), \
+         _mock.patch.object(H.os, "close"):
+        check("块设备容量走 lseek(SEEK_END)",
+              H.query_target_size("/dev/sda"), 1000204886016)
+    with _mock.patch.object(H.os, "open", side_effect=OSError("EPERM")):
+        check("块设备打不开时容量 None", H.query_target_size("/dev/sda"), None)
+    # request_elevation gui=True：同步 sudo 会卡死 GUI，必须异步 pkexec
+    _popen_calls = []
+    with _mock.patch("shutil.which", return_value="/usr/bin/pkexec"), \
+         _mock.patch.object(H.subprocess, "Popen",
+                            side_effect=lambda cmd, **kw: _popen_calls.append(
+                                (cmd, kw)) or None), \
+         _mock.patch.object(H.os, "geteuid", return_value=1000, create=True), \
+         _mock.patch.dict(H.os.environ, {"DISPLAY": ":0",
+                                         "XAUTHORITY": "/run/user/1000/.Xauthority"}):
+        _ok, _code, _err = H.request_elevation(wait=False, gui=True,
+                                               argv=["HD_Doc.py"])
+    check("GUI 提权走 pkexec", _ok, True)
+    check("pkexec 命令已构造", len(_popen_calls), 1)
+    if _popen_calls:
+        _cmd, _kw = _popen_calls[0]
+        check("pkexec 命令行", _cmd[0], "/usr/bin/pkexec")
+        check("pkexec env 透传 DISPLAY", "DISPLAY=:0" in _cmd, True)
+        check("pkexec env 透传 XAUTHORITY",
+              "XAUTHORITY=/run/user/1000/.Xauthority" in _cmd, True)
+        check("pkexec 目标为绝对路径脚本",
+              any(a.endswith("HD_Doc.py") and os.path.isabs(a) for a in _cmd), True)
+        check("pkexec 异步启动(不等待子进程)",
+              _kw.get("start_new_session"), True)
+    with _mock.patch.object(H.os, "geteuid", return_value=1000, create=True), \
+         _mock.patch("shutil.which", return_value=None):
+        _ok2, _c2, _err2 = H.request_elevation(wait=False, gui=True,
+                                               argv=["HD_Doc.py"])
+    check("无 pkexec 时报错", (_ok2, "pkexec" in (_err2 or "")), (False, True))
+    with _mock.patch.object(H.os, "geteuid", return_value=0, create=True):
+        check("已是 root 直接放行", H.request_elevation(gui=True)[0], True)
+finally:
+    H.IS_WIN = _saved_win
+
 # ---------- 管理员权限检测 ----------
 check("物理磁盘路径识别(反斜杠)", H.is_physical_target(B + B + "." + B + "PhysicalDrive1"), True)
 check("物理磁盘路径识别(正斜杠)", H.is_physical_target("//./PhysicalDrive0"), True)

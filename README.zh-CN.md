@@ -39,12 +39,39 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --quick
 python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 ```
 
-扫描物理磁盘需要管理员权限：GUI 在程序启动时即弹 UAC 申请提权（窗口出现
-之前，不等扫描时再问），UAC 选"否"则保持标准权限继续运行（扫镜像文件
-不受影响）；CLI 在扫描物理盘时申请。`--no-elevate` 可关闭自动提权。
+扫描物理磁盘需要管理员权限：Windows 上 GUI 在程序启动时即弹 UAC 申请提权
+（窗口出现之前，不等扫描时再问），UAC 选"否"则保持标准权限继续运行（扫镜像
+文件不受影响）；Linux 上对应 root 权限，见下节。CLI 在扫描物理盘时申请。
+`--no-elevate` 可关闭自动提权。
 
 `--export [DIR]` 会把报告写入 `DIR/HD_Doc_report_<时间戳>/`；不带该参数
 则不写任何文件。全部参数见 `--help`。
+
+## 在 Ubuntu 上运行 GUI
+
+```bash
+# 1. 安装依赖：tkinter（GUI）+ fio（IO 引擎）
+sudo apt update
+sudo apt install python3-tk fio
+
+# 2. 安装 ttkbootstrap（建议用 venv，避免动系统 Python）
+python3 -m venv ~/.venv/hddoc && ~/.venv/hddoc/bin/pip install -r requirements.txt
+
+# 3. 启动（扫描物理磁盘需要 root；扫镜像文件不需要）
+sudo ~/.venv/hddoc/bin/python HD_Doc.py        # 终端里以 root 启动（推荐）
+./HD_Doc.py                                    # 或不加 sudo，扫镜像文件/先看界面
+```
+
+要点：
+
+- **设备下拉框自动列出整盘**（`/dev/sda`、`/dev/nvme0n1`、`/dev/vdb`…，
+  含型号与容量），与 Windows 体验一致；也可以手动输入设备路径
+- **扫物理磁盘必须 root**：fio 要以 root 打开块设备。非 root 启动时界面
+  会提示，点按钮栏的 **"以 root 重启"**（走 pkexec 图形授权，Ubuntu 桌面
+  默认可用）即可；没有 pkexec 时按提示在终端执行 `sudo python3 HD_Doc.py`
+- 扫镜像文件（`dd` 出来的 `.img`）不需要 root，直接选文件即可
+- 引擎默认 `libaio`（fio 的 Linux 构建自带）；个别 minimal 构建只有
+  `psync`/`posixaio`，下拉框切换即可，界面会自动探测可用引擎
 
 ## 语言文件
 
@@ -87,7 +114,7 @@ Windows 为 `%APPDATA%\HD_Doc\HD_Doc.log`，其他平台为 `~/.config/HD_Doc/`�
 
 写日志失败（只读目录/权限不足）时静默忽略，绝不会影响扫描主流程。
 
-## 打包 Windows 可执行文件
+## 打包可执行文件
 
 ```
 python build_exe.py
@@ -95,16 +122,20 @@ python build_exe.py
 
 一次打出两个变体到 `dist/`：
 
-| 文件 | fio | 体积 | 适用场景 |
-|------|-----|------|----------|
-| `HD_Doc.exe` | 内置 | ~31 MB | 分发给没装 fio 的电脑 |
-| `HD_Doc_NoFio.exe` | 不内置 | ~29 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
+| 平台 | 文件 | fio | 体积 | 适用场景 |
+|------|------|-----|------|----------|
+| Windows | `HD_Doc.exe` | 内置 | ~31 MB | 分发给没装 fio 的电脑 |
+| Windows | `HD_Doc_NoFio.exe` | 不内置 | ~29 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
+| Linux | `HD_Doc` | 内置（需本机装有 fio） | ~35 MB | Ubuntu 上免 Python 环境直接运行 |
+| Linux | `HD_Doc_NoFio` | 不内置 | ~33 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
 
-两者都内置 `lang/` 语言文件与 `img/` 图标，运行时行为完全一致；
+在哪个系统上运行 `build_exe.py` 就打哪个平台的包（PyInstaller 不做交叉
+编译）。两者都内置 `lang/` 语言文件与 `img/` 图标，运行时行为完全一致；
 `--variant fio` / `--variant nofio` 可只打一个，`--onedir` 切换目录模式。
 需要带 tkinter 且装有 PyInstaller 的 Python，并 `pip install ttkbootstrap`
 （见 `requirements.txt`）。`--version` 会如实报告 fio 来源
-（`bundled` / `not bundled`）。
+（`bundled` / `not bundled`）。Linux 打包出的可执行文件同样需要 root 才能
+扫物理磁盘：`sudo ./dist/HD_Doc`。
 
 ## 测试
 
@@ -120,8 +151,9 @@ python test/test_gui_gate.py       # GUI 提权门禁
 python test/test_hdd_stop.py       # 真实硬件中途停止
 ```
 
-依赖 fio 的套件需要机器上装有 fio（会自动找到
-`C:\Program Files\fio\fio.exe`）。
+依赖 fio 的套件需要机器上装有 fio（Windows 自动找
+`C:\Program Files\fio\fio.exe`；Linux 用 PATH 中的 `fio` 或
+`/usr/bin/fio`）。
 
 ## 代码结构
 
