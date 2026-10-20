@@ -1,0 +1,3 @@
+# Shell 脚本必须保持 LF 行尾：CRLF 的 .sh 在 Linux 上会直接
+# syntax error（$'\r' 被当命令内容），且报错信息难以定位。
+*.sh text eol=lf
