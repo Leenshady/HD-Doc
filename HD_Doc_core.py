@@ -1133,14 +1133,12 @@ def expected_io_count(size, off, total_size, bs, seg_bytes_done=0):
 # 快速扫描（类 HD Tune Quick Scan）：把磁盘切成若干"区域"，每区只读开头
 # 一小段样本，跳过其余数据。坏道通常成簇分布，抽样足以发现明显损伤区域，
 # 耗时约为全盘扫描的几十分之一。
-QUICK_MAX_REGIONS = 128     # 区域数上限：每个区域一次 fio 启动（约 1 秒），
-                            # 过多时启动开销会累积成主要耗时，故自动放大区域
+QUICK_MAX_REGIONS = 128     # 区域数上限（仅显式区域大小路径）：每个区域一次
+                            # fio 启动（约 1 秒），过多时启动开销会累积成主要
+                            # 耗时，故 plan_quick_segments 自动放大区域
 QUICK_DEFAULT_SAMPLE = 16 * 1024 * 1024   # 默认每区抽样 16MB
-QUICK_DEFAULT_SEG = 4 * 1024 * 1024 * 1024   # 快速扫描默认区域大小：分段
-                            # 下拉移除后快速扫描不再跟随"按格数分段"（那样
-                            # 小盘会被 128 区 × 区头样本读完整盘，失去"快速"
-                            # 意义）。固定 4G：<4G 的盘整盘一区只读区头样本，
-                            # 大盘由 plan_quick_segments 自动翻倍到 ≤128 区。
+# 快速扫描不再有固定区域大小常量：默认按热力图格数固定布点
+# （plan_quick_cell_regions），区域数同样不随容量漂移。
 
 
 def plan_quick_segments(total_size, seg_bytes, sample_bytes, bs=None,
@@ -1178,11 +1176,44 @@ def plan_quick_segments(total_size, seg_bytes, sample_bytes, bs=None,
     return segs or [(0, None)]
 
 
+def plan_quick_cell_regions(total_size, n_cells=MAP_CELLS,
+                            sample_bytes=QUICK_DEFAULT_SAMPLE, bs=None):
+    """快速扫描默认布点：固定 n_cells 个区域（与热力图格一一对应），
+    每区只读开头样本。返回 [(offset, sample_size)]。
+
+    与 plan_quick_segments（固定区域大小 + 在上限内自动翻倍）的区别是
+    区域数同样不随容量漂移：1TB 盘固定 256 区，而不是 4G 区域被
+    QUICK_MAX_REGIONS 翻倍成 8G 后的 117 区（用户反馈"测试扫描分成
+    117 段，而不是 256 段"）。
+
+    样本 = min(sample_bytes, 区域跨度) 并对齐 bs：小盘上样本被区域截断，
+    "每格一个样本"的语义不变（盘小，读完整盘也只要几秒，仍是快速扫描）。
+    区域小于一个 IO 块（极小盘）/容量未知 → [(0, None)] 整盘一次。
+    """
+    regions = plan_cell_segments(total_size, n_cells, bs)
+    if regions == [(0, None)]:
+        # 极小盘（区域 < 一个 IO 块）/容量未知：退化为整盘一次。已知容量时
+        # 带显式 size——与 plan_segments 的"整盘一次"语义一致，报告里的
+        # 覆盖率才不会显示成 0（None 大小无法计算覆盖字节数）
+        return [(0, int(total_size))] if total_size else [(0, None)]
+    out = []
+    for off, span in regions:
+        s = min(int(sample_bytes or QUICK_DEFAULT_SAMPLE), span)
+        if bs:
+            s = min(max(bs, (s // bs) * bs), span)
+        out.append((off, s))
+    return out
+
+
 def quick_scan_setup(size, bs, seg_bytes, sample_bytes):
     """快速扫描参数收口（GUI/CLI 共用）：返回 (bs, segments, sample_bytes)。
 
-    容量未知时无法布点，退化为整盘一次（调用方应提示）；块大小超过抽样
-    大小时缩小块大小（否则抽样会被抬到块大小，失去快速意义）。"""
+    seg_bytes=None（默认）：按热力图格数固定布点（plan_quick_cell_regions，
+    区域数恒定 MAP_CELLS，一段对应一格）；显式值：按固定区域大小
+    （plan_quick_segments，超上限自动翻倍）。容量未知时无法布点，退化为
+    整盘一次（调用方应提示）；块大小超过抽样大小时缩小块大小（否则抽样
+    会被抬到块大小，失去快速意义）。
+    """
     if not size:
         return bs, plan_segments(0, seg_bytes, bs), 0
     sample = int(sample_bytes or 0)
@@ -1191,7 +1222,10 @@ def quick_scan_setup(size, bs, seg_bytes, sample_bytes):
         sample = QUICK_DEFAULT_SAMPLE
     if bs > sample:
         bs = sample
-    segs = plan_quick_segments(size, seg_bytes, sample, bs)
+    if seg_bytes:
+        segs = plan_quick_segments(size, seg_bytes, sample, bs)
+    else:
+        segs = plan_quick_cell_regions(size, MAP_CELLS, sample, bs)
     return bs, segs, (segs[0][1] if segs and segs[0][1] else 0)
 
 

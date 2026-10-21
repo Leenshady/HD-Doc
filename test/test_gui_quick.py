@@ -31,11 +31,16 @@ H.Messagebox.show_error = lambda *a, **k: None
 
 app.var_target.set(BIG)
 app.var_fio.set(FIO)
-# 分段下拉已移除：快速扫描区域默认 QUICK_DEFAULT_SEG（4G，小盘整盘一区）。
-# 本场景要覆盖"多区域整区点亮"，白盒把默认区域临时改成 64M
-#（512MB 盘 → 8 个 64M 区域，与原 var_seg="64M" 场景等价）
-_QUICK_SEG_ORIG = H.QUICK_DEFAULT_SEG
-H.QUICK_DEFAULT_SEG = 64 << 20
+# 分段下拉已移除：快速扫描默认按格数固定布点（区域数不随容量漂移，
+# 512MB 盘默认 256 区）。本场景要覆盖"多区域整区点亮"，白盒把默认
+# 布点临时换成 8 个 64M 区域（512MB 盘 → 8 区，每区 16M 样本）。
+# 注意 patch 点是 core 模块的函数（quick_scan_setup 在 core 内按全局名
+# 调用它，patch GUI 模块的绑定无效——与 patch 常量不同）
+import HD_Doc_core as HC
+_QUICK_REGIONS_ORIG = HC.plan_quick_cell_regions
+def _fake_quick_regions(total, n_cells=256, sample_bytes=16 << 20, bs=None):
+    return [(i * (64 << 20), 16 << 20) for i in range(total // (64 << 20))]
+HC.plan_quick_cell_regions = _fake_quick_regions
 app.var_quick.set(True)           # 快速扫描：每区抽 16M
 app.var_quick_sample.set("16M")
 app._start_scan()
@@ -195,7 +200,7 @@ app.destroy()
 root.destroy()      # 连同隐藏 root 一起销毁：ttkbootstrap 的 Style 是进程级
                     # 单例，旧解释器还活着时新 Window 建不出主题对象
                     # （_theme_objects 为空 → KeyError），与 test_gui_stop 相同做法
-H.QUICK_DEFAULT_SEG = _QUICK_SEG_ORIG   # 还原默认（阶段二为全段扫描，不用它）
+HC.plan_quick_cell_regions = _QUICK_REGIONS_ORIG   # 还原默认（阶段二为全段扫描，不用它）
 
 # ---- 第二阶段：普通全段扫描（回归：_run_worker 曾在工作线程读 Tk 变量
 # 导致 "main thread is not in main loop"，快速/全段两条路径都要覆盖）----

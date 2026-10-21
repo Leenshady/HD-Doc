@@ -19,7 +19,10 @@ Runs on Windows (admin rights required for physical disks) and Linux.
   represents its region, hover shows sample size vs region span), leaving
   no unsampled gray cells
 - Error block list with errno interpretation
-- Quick scan: reads only a head sample of each region, like HD Tune Quick Scan
+- Quick scan: reads only a head sample of each region, like HD Tune Quick
+  Scan — placed on the same fixed 256-cell grid (one region per heatmap
+  cell, so the region count never drifts with capacity; on small disks the
+  sample is clipped to the region, keeping "one sample per cell")
 - On-demand reports: nothing is saved unless you export (segments.csv,
   errors.csv, summary.txt)
 - GUI (ttkbootstrap, light/dark themes) and CLI from the same code base;

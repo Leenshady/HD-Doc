@@ -176,14 +176,38 @@ check("默认分段格数为 0=整盘一次", H.plan_cell_segments(HDD_1TB, 0, 4
       [(0, None)])
 check("默认分段无 bs 时 256 等分", H.plan_cell_segments(1000, 256, None)[0],
       (0, 3))
-# QUICK_DEFAULT_SEG：快速扫描默认区域 4G——<4G 的盘整盘一区只读区头样本
-check("快速扫描默认区域=4GiB", H.QUICK_DEFAULT_SEG, 4 * G)
-q_def = H.plan_quick_segments(512 << 20, H.QUICK_DEFAULT_SEG, 16 << 20, 1 << 20)
-check("512MB 盘快速扫描=1 区（4G 区域被容量截断）", len(q_def), 1)
-check("512MB 盘快速扫描只读 16MiB 样本", sum(s for _, s in q_def), 16 << 20)
-q_def_1t = H.plan_quick_segments(HDD_1TB, H.QUICK_DEFAULT_SEG, 16 << 20, 4 << 20)
-check("1TB 盘快速扫描区域<=128", len(q_def_1t) <= 128, True)
-check("1TB 盘快速扫描每区 16MiB", q_def_1t[0][1], 16 << 20)
+# ---------- plan_quick_cell_regions：快速扫描默认按格数固定布点 ----------
+# 用户反馈"测试扫描分成 117 段，而不是 256 段"：旧默认 4G 区域超
+# QUICK_MAX_REGIONS 被翻倍成 8G，1TB 盘只剩 117 区。现在区域数同样
+# 固定 MAP_CELLS，与热力图格一一对应。
+q_def_1t = H.plan_quick_cell_regions(HDD_1TB, 256, 16 << 20, 4 << 20)
+check("1TB 盘快速扫描=256 区（不再 117）", len(q_def_1t), 256)
+check("1TB 盘快速扫描每区 16MiB 样本", q_def_1t[0][1], 16 << 20)
+check("1TB 盘快速扫描 offset 对齐 4MiB",
+      all(o % (4 << 20) == 0 for o, _s in q_def_1t), True)
+check("1TB 盘快速扫描末区样本完全在盘内",
+      q_def_1t[-1][0] + q_def_1t[-1][1] <= HDD_1TB, True)
+check("1TB 盘快速扫描末区贴近盘尾（第 256 区）",
+      HDD_1TB - q_def_1t[-1][0] < 2 * 3904897024, True)
+# 小盘：样本被区域跨度截断（每格一个样本的语义不变，盘小读完整盘也很快）
+q_def_512 = H.plan_quick_cell_regions(512 << 20, 256, 16 << 20, 1 << 20)
+check("512MB 盘快速扫描=256 区", len(q_def_512), 256)
+check("512MB 盘快速扫描样本被截到区域大小 2MiB", q_def_512[0][1], 2 << 20)
+check("512MB 盘快速扫描样本=区域大小（整格读）",
+      sum(s for _, s in q_def_512), 512 << 20)
+# 极小盘（区域 < 一个 IO 块）退化为整盘一次，但带显式 size（覆盖率可算）
+check("8MB 盘快速扫描退化为整盘一次（带 size）",
+      H.plan_quick_cell_regions(8 << 20, 256, 16 << 20, 1 << 20), [(0, 8 << 20)])
+check("快速扫描容量未知退化为整盘一次",
+      H.plan_quick_cell_regions(0, 256, 16 << 20, 4 << 20), [(0, None)])
+check("快速扫描默认参数（无 bs）256 区",
+      len(H.plan_quick_cell_regions(1 << 30)), 256)
+# quick_scan_setup 收口：seg_bytes=None → 按格数布点
+_bs3, _segs3, _samp3 = H.quick_scan_setup(HDD_1TB, 4 << 20, None, 16 << 20)
+check("quick_scan_setup 默认 256 区", len(_segs3), 256)
+check("quick_scan_setup 抽样 16MiB", _samp3, 16 << 20)
+check("quick_scan_setup 容量未知退化",
+      H.quick_scan_setup(0, 4 << 20, None, 0), (4 << 20, [(0, None)], 0))
 
 # ---------- expected_io_count：停止扫描误报磁盘错误的根因修复 ----------
 # fio 对不足一个块的尾巴：512 对齐会读（文件 6.5MB/1M → 7 次 IO），

@@ -98,14 +98,12 @@ def cli_main(args):
     else:
         # 分段默认与 GUI 一致（GUI 下拉已移除）：未显式指定 --segment-gb 时，
         # 全段扫描固定按热力图格数切段（段数恒定 MAP_CELLS，一段对应一格，
-        # 有实时进度/ETA）；快速扫描用 4G 区域默认（<4G 的盘整盘一区只读
-        # 区头样本，守住"快速"语义）。显式 0/none/整盘 仍是整盘一次。
+        # 有实时进度/ETA）；快速扫描同样按格数固定布点（区域数不随容量
+        # 漂移，每区只读开头样本）。显式 0/none/整盘 仍是整盘一次。
         if seg_explicit:
             seg_bytes = parse_bs("%gG" % float(args.segment_gb))
-        elif getattr(args, "quick", False):
-            seg_bytes = QUICK_DEFAULT_SEG
         else:
-            seg_bytes = None       # 默认：固定按热力图格数切段（下方分支）
+            seg_bytes = None       # 默认：固定按热力图格数切段/布点（下方分支）
         quick_sample = 0
         if getattr(args, "quick", False):
             if size:

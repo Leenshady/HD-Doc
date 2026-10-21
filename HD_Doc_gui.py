@@ -1062,8 +1062,8 @@ class HDDocApp(ttk.Window):
         # 分段大小不再手工可选：全段扫描默认按热力图格数**固定**切 256 段
         # （段与格一一对应，段统计直接就是格的统计）；容量未知/极小盘时
         # plan_cell_segments 退化为"整盘一次"。
-        # 快速扫描不跟随格数——小盘会被 128 区 × 区头样本读完整盘，
-        # 失去"快速"意义，保持 4G 区域默认（<4G 整盘一区只读区头样本）。
+        # 快速扫描同样按格数固定布点（区域数不随容量漂移——1TB 盘固定
+        # 256 区而非 4G 区域翻倍后的 117 区），每区只读开头样本。
         if not size:
             # 不弹窗：降级模式说明进日志与横幅，直接继续
             self._log("warn", "gui.log.no_size_degraded", t=target)
@@ -1072,7 +1072,7 @@ class HDDocApp(ttk.Window):
         if quick:
             if size:
                 bs, segments, quick_sample = quick_scan_setup(
-                    size, bs, QUICK_DEFAULT_SEG,
+                    size, bs, None,
                     parse_bs(self.var_quick_sample.get()))
                 self._log("info", "gui.log.quick_plan",
                           n=len(segments), sample=fmt_bytes(quick_sample),
