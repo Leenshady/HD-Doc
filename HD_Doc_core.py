@@ -1070,18 +1070,30 @@ def sanitize_segments(segments, bs):
     return segs
 
 
-def default_segment_bytes(total_size, n_cells=MAP_CELLS):
-    """默认分段大小：按热力图格数均分整盘（一段≈一格）。
+def plan_cell_segments(total_size, n_cells=MAP_CELLS, bs=None):
+    """默认分段：把整盘**固定切成 n_cells 段**（与热力图格一一对应）。
 
-    分段大小不再由用户选择（GUI 下拉已移除）：段与格一一对应时，段统计
-    直接就是格的统计（weighted_median 退化为恒等），悬停信息也最直观。
-    容量未知（裸设备/查询失败）时返回 None，由 plan_segments 走
-    "整盘一次"降级路径。小于一个 IO 块时调用方（plan_segments）会自动
-    退化为整盘一次——小盘分段没有意义。
+    为什么不复用 plan_segments(total, ⌈total/n⌉, bs)：段大小先按格数
+    向上取整、再被 plan_segments 向下对齐 bs，1TB 盘会切出 257 段
+    （对齐截断让末段又凑出一段）——段数不固定，"一段≈一格"的映射
+    出现一格跨两段。本函数反过来：先定段数，再把段大小向下对齐 bs，
+    对齐余数并进末段——前 n-1 段等长且 offset 天然 bs 对齐，末段稍大
+    （< 2×seg），段数恒定 n_cells。
+
+    容量未知返回 [(0, None)]（整盘一次降级）；盘比 n_cells 个 IO 块
+    还小（极小盘/镜像）时同样退化为整盘一次——那种盘分段没有意义。
     """
     if not total_size or n_cells <= 0:
-        return None
-    return -(-int(total_size) // int(n_cells))
+        return [(0, None)]
+    if bs:
+        seg = (int(total_size) // int(n_cells) // bs) * bs
+    else:
+        seg = int(total_size) // int(n_cells)
+    if seg < (bs or 1):
+        return [(0, None)]
+    segs = [(i * seg, seg) for i in range(n_cells - 1)]
+    segs.append(((n_cells - 1) * seg, int(total_size) - (n_cells - 1) * seg))
+    return segs
 
 
 def expected_io_count(size, off, total_size, bs, seg_bytes_done=0):

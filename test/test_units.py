@@ -145,28 +145,37 @@ check("quick_scan_setup 抽样仍 16MiB", _samp2, 16 << 20)
 check("quick_scan_setup 容量未知退化", H.quick_scan_setup(0, 4 << 20, 4 * G, 0),
       (4 << 20, [(0, None)], 0))
 
-# ---------- default_segment_bytes：默认按热力图格数分段 ----------
-# GUI 分段下拉已移除：未指定时分段大小 = ⌈容量/MAP_CELLS⌉（一段≈一格）
-check("默认分段 1TiB=4GiB（256 格）", H.default_segment_bytes(1 << 40), 4 * G)
-check("默认分段 931.5GB 盘=3907050336", H.default_segment_bytes(HDD_1TB),
-      3907050336)
-check("默认分段 512MB=2MiB", H.default_segment_bytes(512 << 20), 2 << 20)
-check("默认分段 8MB=32KiB", H.default_segment_bytes(8 << 20), 32 << 10)
-check("默认分段向上取整（1000 字节/256）", H.default_segment_bytes(1000), 4)
-check("默认分段容量未知=None", H.default_segment_bytes(None), None)
-check("默认分段容量 0=None", H.default_segment_bytes(0), None)
-check("默认分段格数为 0=None", H.default_segment_bytes(HDD_1TB, 0), None)
-# 1TB 盘按默认分段 → 257 段（段大小对齐到 bs 时被截小，末段 525MiB 补足；
-# 段数与格数同一量级，一格最多含两段，weighted_median 按块数加权）
-segs_def = H.sanitize_segments(
-    H.plan_segments(HDD_1TB, H.default_segment_bytes(HDD_1TB), 4 << 20), 4 << 20)
-check("1TB 默认分段段数=257", len(segs_def), 257)
-check("1TB 默认分段覆盖全盘", sum(s for _, s in segs_def), HDD_1TB)
-check("1TB 默认分段每段>=bs", all(s >= (4 << 20) for _, s in segs_def), True)
-# 段小于一个块时 plan_segments 退化为整盘一次（小盘，与旧 4G 默认一致）
+# ---------- plan_cell_segments：默认固定按热力图格数切段 ----------
+# GUI 分段下拉已移除：默认固定 MAP_CELLS 段，一段对应一格。
+# 曾用"段大小=⌈容量/格数⌉再对齐 bs"（plan_segments 路径），1TB 盘会切出
+# 257 段（对齐截断让末段又凑一段）——用户反馈"分段没有固定分 256 段"，
+# 改为先定段数再对齐，余数并进末段。
+check("默认分段 1TB=256 段", len(H.plan_cell_segments(HDD_1TB, 256, 4 << 20)), 256)
+segs_def = H.sanitize_segments(H.plan_cell_segments(HDD_1TB, 256, 4 << 20), 4 << 20)
+check("默认分段 1TB 段数=256（sanitize 后不变）", len(segs_def), 256)
+check("默认分段 1TB 覆盖全盘", sum(s for _, s in segs_def), HDD_1TB)
+check("默认分段 1TB 每段>=bs", all(s >= (4 << 20) for _, s in segs_def), True)
+check("默认分段 1TB 前 255 段等长",
+      len(set(s for _o, s in segs_def[:255])), 1)
+check("默认分段 1TB offset 全部 bs 对齐",
+      all(o % (4 << 20) == 0 for o, _s in segs_def), True)
+check("默认分段 1TB 段大小=⌊1TB/256⌋ 对齐 4MiB",
+      segs_def[0][1], (HDD_1TB // 256 // (4 << 20)) * (4 << 20))
+check("默认分段 512MB=256 段×2MiB",
+      (len(H.plan_cell_segments(512 << 20)), H.plan_cell_segments(512 << 20)[0]),
+      (256, (0, 2 << 20)))
+check("默认分段末段不短于普通段",
+      H.plan_cell_segments(HDD_1TB, 256, 4 << 20)[-1][1]
+      >= H.plan_cell_segments(HDD_1TB, 256, 4 << 20)[0][1], True)
+# 盘比 256 个 IO 块还小（8MB/1M → 32KB<块）：退化为整盘一次
 check("8MB 盘默认分段退化为整盘一次",
-      H.plan_segments(8 << 20, H.default_segment_bytes(8 << 20), 1 << 20),
+      H.plan_cell_segments(8 << 20, 256, 1 << 20), [(0, None)])
+check("默认分段容量未知=整盘一次", H.plan_cell_segments(None), [(0, None)])
+check("默认分段容量 0=整盘一次", H.plan_cell_segments(0), [(0, None)])
+check("默认分段格数为 0=整盘一次", H.plan_cell_segments(HDD_1TB, 0, 4 << 20),
       [(0, None)])
+check("默认分段无 bs 时 256 等分", H.plan_cell_segments(1000, 256, None)[0],
+      (0, 3))
 # QUICK_DEFAULT_SEG：快速扫描默认区域 4G——<4G 的盘整盘一区只读区头样本
 check("快速扫描默认区域=4GiB", H.QUICK_DEFAULT_SEG, 4 * G)
 q_def = H.plan_quick_segments(512 << 20, H.QUICK_DEFAULT_SEG, 16 << 20, 1 << 20)

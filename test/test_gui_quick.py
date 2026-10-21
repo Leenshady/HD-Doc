@@ -213,8 +213,8 @@ app2.var_bs.set("1M")              # 显式块大小：8 块，断言确定
 app2.var_quick.set(False)
 app2._start_scan()
 assert app2.scan_quick is False
-# 固定格数：8MB 小盘同样 256 格。默认分段 = ⌈8MB/256⌉ = 32KB < 块大小
-# 1M，plan_segments 退化为整盘一次：单段 (0, None) 覆盖全部 256 格
+# 固定格数：8MB 小盘同样 256 格。默认分段固定 256 段 → 32KB/段 < 块大小
+# 1M，plan_cell_segments 退化为整盘一次：单段 (0, None) 覆盖全部 256 格
 assert len(app2.cells) == H.MAP_CELLS, len(app2.cells)
 assert len(app2.seg_cells) == 1, len(app2.seg_cells)
 assert app2.seg_cells[0] == list(range(0, 256)), app2.seg_cells[0][:3]

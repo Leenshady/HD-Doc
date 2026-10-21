@@ -542,7 +542,7 @@ class HDDocApp(ttk.Window):
         self._reg(ttk.Checkbutton(row1, variable=self.var_direct),
                   "gui.direct").pack(side="left")
         # 分段大小不再提供选择：全段扫描默认按热力图格数（MAP_CELLS）
-        # 均分（一段≈一格），见 _start_scan 的 default_segment_bytes
+        # 固定切段（一段对应一格），见 _start_scan 的 plan_cell_segments
         self.var_quick = tk.BooleanVar(value=False)
         self._reg(ttk.Checkbutton(row1, variable=self.var_quick,
                                   command=self._on_quick_toggle),
@@ -1059,11 +1059,11 @@ class HDDocApp(ttk.Window):
             bs = clamp_bs(bs, size)
             self._log("warn", "gui.log.bs_clamped", sz=fmt_bytes(bs))
         quick = bool(self.var_quick.get())
-        # 分段大小不再手工可选：全段扫描默认按热力图格数均分（一段≈一格，
-        # 段统计与格一一对应）；容量未知时 seg_bytes=None，走"整盘一次"
-        # 降级。快速扫描不跟随格数——小盘会被 128 区 × 区头样本读完整盘，
+        # 分段大小不再手工可选：全段扫描默认按热力图格数**固定**切 256 段
+        # （段与格一一对应，段统计直接就是格的统计）；容量未知/极小盘时
+        # plan_cell_segments 退化为"整盘一次"。
+        # 快速扫描不跟随格数——小盘会被 128 区 × 区头样本读完整盘，
         # 失去"快速"意义，保持 4G 区域默认（<4G 整盘一区只读区头样本）。
-        seg_bytes = default_segment_bytes(size)
         if not size:
             # 不弹窗：降级模式说明进日志与横幅，直接继续
             self._log("warn", "gui.log.no_size_degraded", t=target)
@@ -1081,9 +1081,11 @@ class HDDocApp(ttk.Window):
             else:
                 self._log("warn", "gui.log.quick_no_size")
                 quick = False
-                segments = sanitize_segments(plan_segments(size, seg_bytes, bs), bs)
+                segments = sanitize_segments(
+                    plan_cell_segments(size, MAP_CELLS, bs), bs)
         else:
-            segments = sanitize_segments(plan_segments(size, seg_bytes, bs), bs)
+            segments = sanitize_segments(
+                plan_cell_segments(size, MAP_CELLS, bs), bs)
         if size:
             self._log("info", "gui.log.capacity_plan",
                       sz=fmt_bytes(size), n=len(segments), b=size // bs)

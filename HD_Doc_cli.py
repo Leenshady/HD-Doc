@@ -72,6 +72,20 @@ def cli_main(args):
         bs = clamp_bs(bs, size)
         print("[Note] Block size exceeds disk capacity; adjusted to %s" % fmt_bytes(bs))
 
+    # --segment-gb 显式性判断：0.0 是 falsy 不能当"未指定"，
+    # str(0.0)="0.0" 也不在关键词里——整盘一次（显式 0/none/整盘）必须
+    # 与"未指定（默认固定 MAP_CELLS 段）"区分开
+    seg_arg = getattr(args, "segment_gb", None)
+    seg_whole = False
+    seg_explicit = False
+    if seg_arg is not None:
+        try:
+            seg_whole = float(seg_arg) == 0
+        except (TypeError, ValueError):
+            pass
+        seg_whole = seg_whole or str(seg_arg).strip().lower() in ("none", "整盘")
+        seg_explicit = not seg_whole
+
     if args.limit_mb:
         off = int(args.offset_mb * 1024 * 1024)
         aligned_off = (off // bs) * bs
@@ -83,17 +97,15 @@ def cli_main(args):
         segments = [seg]
     else:
         # 分段默认与 GUI 一致（GUI 下拉已移除）：未显式指定 --segment-gb 时，
-        # 全段扫描按热力图格数均分（一段≈一格，有实时进度/ETA）；快速扫描
-        # 用 4G 区域默认（<4G 的盘整盘一区只读区头样本，守住"快速"语义）。
-        # 显式 0/none/整盘 仍是整盘一次。
-        seg_explicit = (args.segment_gb
-                       and str(args.segment_gb).lower() not in ("0", "none", "整盘"))
+        # 全段扫描固定按热力图格数切段（段数恒定 MAP_CELLS，一段对应一格，
+        # 有实时进度/ETA）；快速扫描用 4G 区域默认（<4G 的盘整盘一区只读
+        # 区头样本，守住"快速"语义）。显式 0/none/整盘 仍是整盘一次。
         if seg_explicit:
             seg_bytes = parse_bs("%gG" % float(args.segment_gb))
         elif getattr(args, "quick", False):
             seg_bytes = QUICK_DEFAULT_SEG
         else:
-            seg_bytes = default_segment_bytes(size)
+            seg_bytes = None       # 默认：固定按热力图格数切段（下方分支）
         quick_sample = 0
         if getattr(args, "quick", False):
             if size:
@@ -104,13 +116,15 @@ def cli_main(args):
                 print("[Warning] Quick scan needs a known capacity to place samples "
                       "evenly; capacity unknown, falling back to a single full pass.")
                 segments = plan_segments(size, seg_bytes, bs)
-        else:
+        elif seg_explicit or seg_whole:
+            # 显式大小 → 按大小切；显式 0/none/整盘 → seg_bytes=None 整盘一次
             segments = plan_segments(size, seg_bytes, bs)
+        else:
+            # 默认分段：固定 MAP_CELLS 段，一段对应一格（段数不随容量漂移）
+            segments = plan_cell_segments(size, MAP_CELLS, bs)
     segments = sanitize_segments(segments, bs)
 
-    seg_requested = (args.segment_gb
-                     and str(args.segment_gb).lower() not in ("0", "none", "整盘"))
-    if seg_requested and not size:
+    if seg_explicit and not size:
         print("[Warning] Could not query target capacity (raw devices usually need "
               "administrator rights; or PowerShell/WMI query is disabled), "
               "cannot segment by %sG.\n"

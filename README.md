@@ -35,9 +35,10 @@ python HD_Doc.py
 ```
 
 Pick a target from the dropdown, choose block size, press **Start scan**.
-Segmentation is automatic: the disk is divided into 256 segments — one per
-heatmap cell — so every segment's stats map directly onto one cell (CLI:
-`--segment-gb 0` for a single whole-disk pass, or an explicit size). The
+Segmentation is automatic: the disk is split into a **fixed 256 segments** —
+one per heatmap cell, regardless of capacity — so every segment's stats map
+directly onto one cell (CLI: `--segment-gb 0` for a single whole-disk pass,
+or an explicit size). The
 heatmap re-tiles itself whenever you resize the window, and the *Heatmap*
 dropdown switches between **Disk health** (green/red by read errors) and
 **Read speed** (green/yellow/red by latency). Switch language or
