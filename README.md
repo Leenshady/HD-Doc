@@ -256,6 +256,7 @@ python test/test_cli_stop.py       # CLI Ctrl+C handling
 python test/test_cli_gate.py       # elevation gate + CLI scan
 python test/test_gui_gate.py       # elevation gate in GUI
 python test/test_hdd_stop.py       # real hardware mid-scan stop
+python test/test_job_kill.py       # fio dies with parent (Task Manager kill)
 ```
 
 The fio-based suites need `fio` on the machine (on Windows

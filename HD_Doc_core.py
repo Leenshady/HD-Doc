@@ -1801,6 +1801,83 @@ def _fio_target_arg(target):
     return target, None
 
 
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+JobObjectExtendedLimitInformation = 9
+
+
+def _create_kill_on_close_job():
+    """创建带 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 的 Job 对象（仅 Windows）。
+
+    返回 (job_handle, assign_fn)；assign_fn(proc_handle) 把子进程加入 job。
+    语义：持有 job 句柄的进程被任何方式终止（包括 TerminateProcess 强杀）
+    时，内核自动终止 job 内全部进程——用于 fio 随本程序共存亡，避免孤儿
+    fio 在程序被杀后继续把整盘读完。
+
+    调用方**必须长期持有 job_handle**：句柄被关闭（GC/CloseHandle）的瞬间
+    就会触发杀 job，因此本函数故意不提供 close 函数。任何平台/权限失败都
+    静默返回 (None, None)——job 只是兜底保险，扫描不依赖它。
+    非 Windows 平台恒返回 (None, None)（Linux 的等价机制是
+    PR_SET_PDEATHSIG，需在子进程 preexec 里调，多线程宿主下有死锁风险，
+    暂不引入）。
+    """
+    if sys.platform != "win32":
+        return None, None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_void_p),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [("ReadOperationCount", ctypes.c_uint64),
+                        ("WriteOperationCount", ctypes.c_uint64),
+                        ("OtherOperationCount", ctypes.c_uint64),
+                        ("ReadTransferCount", ctypes.c_uint64),
+                        ("WriteTransferCount", ctypes.c_uint64),
+                        ("OtherTransferCount", ctypes.c_uint64)]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation",
+                         JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                        ("IoInfo", IO_COUNTERS),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None, None
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+                job, JobObjectExtendedLimitInformation,
+                ctypes.byref(info), ctypes.sizeof(info)):
+            kernel32.CloseHandle(job)
+            return None, None
+
+        def assign(proc_handle):
+            """把子进程加入 job；失败返回 False（不抛）。"""
+            try:
+                return bool(kernel32.AssignProcessToJobObject(job, proc_handle))
+            except Exception:
+                return False
+
+        return job, assign
+    except Exception:
+        return None, None
+
+
 class FioScanner:
     """fio 扫描编排：分段执行、流式解析、聚合统计"""
 
@@ -1809,6 +1886,12 @@ class FioScanner:
         self._stop_evt = threading.Event()
         self._proc = None
         self._last_tmpdir = None
+        # Job Object（仅 Windows）：fio 加入"关闭即杀"的 job，本进程被任务
+        # 管理器强杀时内核自动连坐 fio——否则程序没了 fio 还在后台把整盘
+        # 读完（用户实测：结束任务后磁盘仍 100%）。句柄由本实例长期持有，
+        # 绝不主动 CloseHandle（关闭即触发杀 job，见下方注释）
+        self._job = None
+        self._job_assign = None
 
     def stop(self):
         self._stop_evt.set()
@@ -1959,6 +2042,9 @@ class FioScanner:
         self._stop_evt.clear()
         if ioengine is None:
             ioengine = "windowsaio" if IS_WIN else "libaio"
+        # Job Object 兜底：本进程被任何方式杀死（任务管理器结束任务、
+        # TerminateProcess）时连坐终止 fio，避免孤儿进程继续读盘
+        self._job, self._job_assign = _create_kill_on_close_job()
         # 修整分段：fio 拒绝 size < bs 的段（直接报错导致尾部数据漏扫），
         # 过小的末段合并进前一段；扫描范围整体小于一个块时缩小块大小。
         segments = sanitize_segments(segments, bs)
@@ -2027,6 +2113,14 @@ class FioScanner:
                     cwd=fio_cwd,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 self._proc = proc
+                # 把 fio 加入"关闭即杀" job：本进程被强杀时内核连坐终止它。
+                # proc._handle 是 Windows Popen 的进程句柄（私有属性但跨版本
+                # 稳定）；非 Windows 没有该属性，跳过。失败静默——job 只是
+                # 兜底保险，不依赖它完成扫描。
+                if self._job_assign:
+                    ph = getattr(proc, "_handle", None)
+                    if ph:
+                        self._job_assign(ph)
                 out_state = {"docs": []}
                 err_state = {"lines": []}
                 ctx = {"index": seg_i, "offset": off, "size": size,
