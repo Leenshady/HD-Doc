@@ -74,7 +74,7 @@ def cli_main(args):
 
     # --segment-gb 显式性判断：0.0 是 falsy 不能当"未指定"，
     # str(0.0)="0.0" 也不在关键词里——整盘一次（显式 0/none/整盘）必须
-    # 与"未指定（默认固定 MAP_CELLS 段）"区分开
+    # 与"未指定（默认 4G，与 GUI 下拉默认一致）"区分开
     seg_arg = getattr(args, "segment_gb", None)
     seg_whole = False
     seg_explicit = False
@@ -96,16 +96,21 @@ def cli_main(args):
         seg = (aligned_off, int(args.limit_mb * 1024 * 1024))
         segments = [seg]
     else:
-        # 分段默认与 GUI 一致（GUI 下拉已移除）：未显式指定 --segment-gb 时，
-        # 全段扫描固定按热力图格数切段（段数恒定 MAP_CELLS，一段对应一格，
-        # 有实时进度/ETA）；快速扫描同样按格数固定布点（区域数不随容量
-        # 漂移，每区只读开头样本）。显式 0/none/整盘 仍是整盘一次。
-        if seg_explicit:
+        # 分段默认与 GUI 下拉一致：未指定时 4G（显式 0/none/整盘 → 整盘
+        # 一次，显式大小 → 按大小切）。快速扫描的区域布点与分段大小无关：
+        # 固定按热力图格数布 256 区（区域数不随容量漂移——4G 区域超上限
+        # 翻倍后 1TB 盘只剩 117 区，用户反馈"不是 256 段"）。
+        quick = bool(getattr(args, "quick", False))
+        if quick:
+            seg_bytes = None            # 固定 256 区布点，与 --segment-gb 无关
+        elif seg_explicit:
             seg_bytes = parse_bs("%gG" % float(args.segment_gb))
+        elif seg_whole:
+            seg_bytes = None            # 显式整盘一次
         else:
-            seg_bytes = None       # 默认：固定按热力图格数切段/布点（下方分支）
+            seg_bytes = parse_bs("4G")  # 默认 4G（与 GUI 下拉默认一致）
         quick_sample = 0
-        if getattr(args, "quick", False):
+        if quick:
             if size:
                 bs, segments, quick_sample = quick_scan_setup(
                     size, bs, seg_bytes,
@@ -114,12 +119,8 @@ def cli_main(args):
                 print("[Warning] Quick scan needs a known capacity to place samples "
                       "evenly; capacity unknown, falling back to a single full pass.")
                 segments = plan_segments(size, seg_bytes, bs)
-        elif seg_explicit or seg_whole:
-            # 显式大小 → 按大小切；显式 0/none/整盘 → seg_bytes=None 整盘一次
-            segments = plan_segments(size, seg_bytes, bs)
         else:
-            # 默认分段：固定 MAP_CELLS 段，一段对应一格（段数不随容量漂移）
-            segments = plan_cell_segments(size, MAP_CELLS, bs)
+            segments = plan_segments(size, seg_bytes, bs)
     segments = sanitize_segments(segments, bs)
 
     if seg_explicit and not size:

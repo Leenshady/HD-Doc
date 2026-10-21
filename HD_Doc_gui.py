@@ -408,6 +408,7 @@ class HDDocApp(ttk.Window):
             "bs_idx": self.combo_bs.current(),
             "engine": self.var_engine.get(),
             "direct": bool(self.var_direct.get()),
+            "seg_idx": self.combo_seg.current(),
             "quick": bool(self.var_quick.get()),
             "sample_idx": self.combo_quick_sample.current(),
             "map_mode_idx": self.combo_map_mode.current(),
@@ -449,6 +450,8 @@ class HDDocApp(ttk.Window):
             self.combo_bs.current(snap["bs_idx"])
         self.var_engine.set(snap["engine"])
         self.var_direct.set(snap["direct"])
+        if snap["seg_idx"] >= 0:
+            self.combo_seg.current(snap["seg_idx"])
         self.var_quick.set(snap["quick"])
         self._on_quick_toggle()
         if snap["sample_idx"] >= 0:
@@ -468,11 +471,9 @@ class HDDocApp(ttk.Window):
             self._reset_map(seg_meta)             # 固定格数 + 段→格映射重算
             self.cells = [dict(c) for c in cells]   # 数据搬回新格子
             self.thresholds = thresholds
-            if self.summary is not None:
-                self._redraw_cells()      # 已完成：按最终阈值画
-            else:
-                # 扫描中：等下一次 _flush_cells 统一上色
-                self.dirty = set(range(len(self.cells)))
+            # 界面重建（切语言/主题）不是扫描渲染：整幅按当前模式与阈值
+            # 即刻恢复，不走逐格队列（否则地图要重新"扫"一遍才填满）
+            self._redraw_cells()
         if self.summary is not None:
             self.progress.stop()
             self.progress.config(mode="determinate")
@@ -541,8 +542,16 @@ class HDDocApp(ttk.Window):
         self.var_direct = tk.BooleanVar(value=True)
         self._reg(ttk.Checkbutton(row1, variable=self.var_direct),
                   "gui.direct").pack(side="left")
-        # 分段大小不再提供选择：全段扫描默认按热力图格数（MAP_CELLS）
-        # 固定切段（一段对应一格），见 _start_scan 的 plan_cell_segments
+        # 分段大小可选（默认 4G）：一段可跨多格，热力图按格索引顺序
+        # 逐格点亮（一次只亮一格，见 _flush_cells）
+        self._reg(ttk.Label(row1), "gui.segment").pack(side="left",
+                                                       padx=(14, 0))
+        self.var_seg = tk.StringVar(value="4G")
+        self.combo_seg = self._reg_values(
+            ttk.Combobox(row1, textvariable=self.var_seg, width=22,
+                         state="readonly"),
+            "gui.seg_values")
+        self.combo_seg.pack(side="left")
         self.var_quick = tk.BooleanVar(value=False)
         self._reg(ttk.Checkbutton(row1, variable=self.var_quick,
                                   command=self._on_quick_toggle),
@@ -1059,12 +1068,13 @@ class HDDocApp(ttk.Window):
             bs = clamp_bs(bs, size)
             self._log("warn", "gui.log.bs_clamped", sz=fmt_bytes(bs))
         quick = bool(self.var_quick.get())
-        # 分段大小不再手工可选：全段扫描默认按热力图格数**固定**切 256 段
-        # （段与格一一对应，段统计直接就是格的统计）；容量未知/极小盘时
-        # plan_cell_segments 退化为"整盘一次"。
-        # 快速扫描同样按格数固定布点（区域数不随容量漂移——1TB 盘固定
-        # 256 区而非 4G 区域翻倍后的 117 区），每区只读开头样本。
-        if not size:
+        # 分段大小可选（默认 4G）："整盘一次"（parse 返回 None）→ 单段
+        # 整盘；容量未知时同样降级整盘一次（横幅提示，不弹窗）。
+        # 快速扫描的区域布点与分段大小无关：固定按热力图格数布 256 区
+        # （区域数不随容量漂移——4G 区域超上限翻倍后 1TB 盘只剩 117 区，
+        # 用户反馈），每区只读开头样本。
+        seg_bytes = parse_segment_size(self.var_seg.get())
+        if not size and seg_bytes is not None:
             # 不弹窗：降级模式说明进日志与横幅，直接继续
             self._log("warn", "gui.log.no_size_degraded", t=target)
             self._banner("gui.log.no_size_degraded", "warn", t=target)
@@ -1082,10 +1092,9 @@ class HDDocApp(ttk.Window):
                 self._log("warn", "gui.log.quick_no_size")
                 quick = False
                 segments = sanitize_segments(
-                    plan_cell_segments(size, MAP_CELLS, bs), bs)
+                    plan_segments(size, seg_bytes, bs), bs)
         else:
-            segments = sanitize_segments(
-                plan_cell_segments(size, MAP_CELLS, bs), bs)
+            segments = sanitize_segments(plan_segments(size, seg_bytes, bs), bs)
         if size:
             self._log("info", "gui.log.capacity_plan",
                       sz=fmt_bytes(size), n=len(segments), b=size // bs)
@@ -1342,13 +1351,12 @@ class HDDocApp(ttk.Window):
 
     def _on_map_mode_toggle(self, _ev=None, redraw=True):
         """切换热力图模式（健康 ↔ 读取速度）：标题与图例即时更新，
-        格子按新模式重上色——已完成→立即全量重绘；扫描中→全部标记脏，
-        下一拍 _flush_cells 随 provisional 阈值统一上色（避免用过程阈值
-        把中间态定格）。数据（中位数/错误数/块数）与模式无关，不重算。
+        格子按新模式重新逐格上色（_queue_recolor → _flush_cells，
+        一次只亮一格，与扫描推进的渲染方式一致）。
 
         redraw=False 供界面重建（_rebuild_ui）用：彼时 cell_items 还是
-        已销毁画布的旧 id，重绘无意义；随后的地图数据重载会以新 items
-        按新模式上色。
+        已销毁画布的旧 id，重排无意义；随后的地图数据恢复会按新模式
+        即刻整幅上色（界面重建不是扫描渲染，不走逐格队列）。
         """
         self.map_mode = self.combo_map_mode.current()
         if self.map_mode < 0:      # 防御：选择被清空时回到健康模式
@@ -1358,10 +1366,20 @@ class HDDocApp(ttk.Window):
         self._layout_legend()
         if not redraw or not self.cells:
             return
-        if self.summary is not None:
-            self._redraw_cells()
-        else:
-            self.dirty = set(range(len(self.cells)))
+        self._queue_recolor()
+
+    def _queue_recolor(self):
+        """把"当前模式/阈值下颜色会变"的格入待渲染队列（逐格上色）。
+
+        用于扫描完成（最终阈值就位）与模式切换：不变色的格不进队列，
+        避免无谓的重排延迟；入队后由 _flush_cells 逐格渲染。
+        """
+        for i in range(len(self.cells)):
+            if i >= len(self.cell_items) or not self.cell_items[i]:
+                continue
+            want = self._cell_color(i)
+            if self.canvas_map.itemcget(self.cell_items[i], "fill") != want:
+                self.dirty.add(i)
 
     def _add_seg_stat(self, cell_idx, ev):
         """把一段的统计聚合进格：parts 累积 (median, max, n_blocks)，格中位数
@@ -1397,8 +1415,21 @@ class HDDocApp(ttk.Window):
         return COLOR_SLOW if c["median"] > self.thresholds else COLOR_OK
 
     def _flush_cells(self, force=False):
+        """逐格渲染热力图：每次调用最多上色一格。
+
+        用户要求"一个一个渲染，不要一次渲染多个"：一段跨多格（如 4G 段在
+        1TB 盘上覆盖 1-2 格）或多段在同一拍完成时，格子按索引顺序
+        （左→右、上→下，即扫描推进方向）逐格点亮，形成随扫描前进的填充
+        效果，而不是整批同时变色。
+
+        节流随待渲染数量自适应：段间自然节奏（积压 ≤2 格）约 120ms 一格，
+        肉眼就是逐格点亮；大批积压（快速扫描/整盘一次/小盘大段）时约
+        25ms 一格追赶扫描进度（256 格约 6.4s 排干），避免扫描结束了地图
+        还在慢慢填。轮询周期同步自适应，见 _poll_queue。
+        """
         now = time.time()
-        if not force and now - self._last_flush < 0.12:
+        interval = 0.12 if len(self.dirty) <= 2 else 0.025
+        if not force and now - self._last_flush < interval:
             return
         self._last_flush = now
         if not self.dirty:
@@ -1411,13 +1442,11 @@ class HDDocApp(ttk.Window):
             if meds:
                 med = statistics.median(meds)
                 self.thresholds = max(med * 3.0, 10000.0)
-        items = self.canvas_map
-        batch = list(self.dirty)[:4000]
-        for idx in batch:
-            if idx < len(self.cell_items) and self.cell_items[idx]:
-                items.itemconfig(self.cell_items[idx],
-                                 fill=self._cell_color(idx))
-        self.dirty.clear()
+        idx = min(self.dirty)      # 索引顺序：铺格顺序即扫描推进方向
+        self.dirty.discard(idx)
+        if idx < len(self.cell_items) and self.cell_items[idx]:
+            self.canvas_map.itemconfig(self.cell_items[idx],
+                                       fill=self._cell_color(idx))
 
     # ---------------------------------------------------------- 事件处理
     def _poll_queue(self):
@@ -1437,7 +1466,10 @@ class HDDocApp(ttk.Window):
         except queue.Empty:
             pass
         self._flush_cells()
-        self._poll_after = self.after(100, self._poll_queue)
+        # 逐格渲染的速率上限由轮询周期决定：待渲染格子多时加快轮询
+        # （25ms → 40 格/s，256 格约 6.4s 排干），没有积压时回到 100ms
+        self._poll_after = self.after(25 if len(self.dirty) > 2 else 100,
+                                      self._poll_queue)
 
     def _mark_error_block(self, blk_idx, bs=None, total=None):
         """错误块计入热力图：按块起始字节精确落到格（格按字节范围均分，
@@ -1548,7 +1580,8 @@ class HDDocApp(ttk.Window):
         total = s.get("total_size") or self.total_size
         for idx in s["error_blocks"]:
             self._mark_error_block(idx, s.get("bs"), total)
-        self._redraw_cells()
+        # 最终阈值就位：只把颜色会变的格入队，逐格渲染（一次一格）
+        self._queue_recolor()
         self._render_result_ui(s)
         core.log_event(
             "scan: finished target=%s blocks=%d ok=%d slow=%d "
@@ -1558,7 +1591,9 @@ class HDDocApp(ttk.Window):
                bool(s.get("stop_requested")), s["elapsed_s"]))
 
     def _redraw_cells(self):
-        """用当前模式与阈值全量重绘热力图（最终阈值/重建界面/切换模式后调用）"""
+        """用当前模式与阈值全量重绘热力图（界面重建/主题切换等非扫描
+        渲染路径。扫描推进、扫描完成与模式切换走逐格队列，见
+        _flush_cells 与 _queue_recolor）"""
         for i in range(len(self.cells)):
             if i < len(self.cell_items) and self.cell_items[i]:
                 self.canvas_map.itemconfig(self.cell_items[i],

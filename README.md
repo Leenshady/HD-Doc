@@ -14,7 +14,10 @@ Runs on Windows (admin rights required for physical disks) and Linux.
   **Disk health** (green = OK, red = read error — HD Tune error-scan
   semantics) and **Read speed** (green = fast, yellow = slow, red = read
   error, latency against adaptive median-based thresholds). Gray always
-  means "not scanned yet", never a verdict. The grid re-tiles itself when
+  means "not scanned yet", never a verdict. Cells render **one at a time**
+  as segments complete — a segment spanning several cells lights them
+  sequentially, never a whole batch at once — so the map fills in step
+  with the scan. The grid re-tiles itself when
   you resize the window; quick scan lights whole regions (the head sample
   represents its region, hover shows sample size vs region span), leaving
   no unsampled gray cells
@@ -37,11 +40,12 @@ GUI:
 python HD_Doc.py
 ```
 
-Pick a target from the dropdown, choose block size, press **Start scan**.
-Segmentation is automatic: the disk is split into a **fixed 256 segments** —
-one per heatmap cell, regardless of capacity — so every segment's stats map
-directly onto one cell (CLI: `--segment-gb 0` for a single whole-disk pass,
-or an explicit size). The
+Pick a target from the dropdown, choose block size and segment size
+(default **4G**; "whole disk at once" or 512M–64G), press **Start scan**.
+A segment can span several heatmap cells — cells light up **one at a time**
+as each segment completes (never a whole batch at once), so the map fills
+in step with the scan (CLI: `--segment-gb` defaults to 4 as well, `0` for a
+single whole-disk pass, or an explicit size). The
 heatmap re-tiles itself whenever you resize the window, and the *Heatmap*
 dropdown switches between **Disk health** (green/red by read errors) and
 **Read speed** (green/yellow/red by latency). Switch language or

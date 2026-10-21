@@ -31,16 +31,28 @@ H.Messagebox.show_error = lambda *a, **k: None
 
 app.var_target.set(BIG)
 app.var_fio.set(FIO)
-# 分段下拉已移除：快速扫描默认按格数固定布点（区域数不随容量漂移，
-# 512MB 盘默认 256 区）。本场景要覆盖"多区域整区点亮"，白盒把默认
-# 布点临时换成 8 个 64M 区域（512MB 盘 → 8 区，每区 16M 样本）。
-# 注意 patch 点是 core 模块的函数（quick_scan_setup 在 core 内按全局名
-# 调用它，patch GUI 模块的绑定无效——与 patch 常量不同）
+# 分段下拉已恢复（默认 4G），但快速扫描的区域布点与分段大小无关：
+# 固定按格数布 256 区（区域数不随容量漂移）。本场景要覆盖"多区域整区
+# 点亮"，白盒把默认布点临时换成 8 个 64M 区域（512MB 盘 → 8 区，
+# 每区 16M 样本）。注意 patch 点是 core 模块的函数
+# （quick_scan_setup 在 core 内按全局名调用它，patch GUI 模块的绑定
+# 无效——与 patch 常量不同）
 import HD_Doc_core as HC
 _QUICK_REGIONS_ORIG = HC.plan_quick_cell_regions
 def _fake_quick_regions(total, n_cells=256, sample_bytes=16 << 20, bs=None):
     return [(i * (64 << 20), 16 << 20) for i in range(total // (64 << 20))]
 HC.plan_quick_cell_regions = _fake_quick_regions
+
+
+def _drain(a, limit=15):
+    """等逐格渲染队列排干（一次只亮一格；256 格约 6.4s）"""
+    t0 = time.time()
+    while a.dirty and time.time() - t0 < limit:
+        a.update()
+        time.sleep(0.02)
+    assert not a.dirty, "待渲染格子未排干"
+
+
 app.var_quick.set(True)           # 快速扫描：每区抽 16M
 app.var_quick_sample.set("16M")
 app._start_scan()
@@ -117,6 +129,8 @@ app.cells[100]["median"] = app.cells[99]["median"]   # 还原，避免影响后�
 
 # ---- 缩放自适应：窗口缩放后格子按新画布尺寸重排（用户反馈"缩放 GUI，
 # 热力图里的块没有自适应宽度"的直接回归）----
+_drain(app)      # 先等逐格渲染排干：缩放前后比对必须是最终态，
+                 # 否则"填充色不变"断言比对的是渲染中间态
 meds_before = [c["median"] for c in app.cells]
 colors_before = [app.canvas_map.itemcget(it, "fill") for it in app.cell_items]
 old_grid = (app.cell_pitch, app.grid_cols, app.grid_rows)
@@ -155,6 +169,7 @@ app.cells[10]["max"] = 10 ** 9
 # 健康模式：错误格红；慢格绿（读得慢但不是错误，健康只有绿/红两色）
 app.combo_map_mode.current(H.MAP_MODE_HEALTH)
 app._on_map_mode_toggle()
+_drain(app)                      # 逐格渲染：等队列排干再断言填充色
 assert app.canvas_map.itemcget(app.cell_items[7], "fill") == H.COLOR_ERROR
 assert app.canvas_map.itemcget(app.cell_items[10], "fill") == H.COLOR_OK
 assert app.canvas_map.itemcget(app.cell_items[0], "fill") == H.COLOR_OK
@@ -163,6 +178,7 @@ assert app._legend_labels[1][0].winfo_manager() == "", \
 # 速度模式：错误格仍红；慢格变黄；正常格绿；图例补回"偏慢"
 app.combo_map_mode.current(H.MAP_MODE_SPEED)
 app._on_map_mode_toggle()
+_drain(app)
 assert app.canvas_map.itemcget(app.cell_items[7], "fill") == H.COLOR_ERROR
 assert app.canvas_map.itemcget(app.cell_items[10], "fill") == H.COLOR_SLOW
 assert app.canvas_map.itemcget(app.cell_items[0], "fill") == H.COLOR_OK
@@ -174,6 +190,7 @@ app.cells[10]["median"] = app.cells[9]["median"]
 app.cells[10]["max"] = app.cells[9]["max"]
 app.combo_map_mode.current(H.MAP_MODE_HEALTH)
 app._on_map_mode_toggle()
+_drain(app)
 print("双模式切换 OK：健康=绿/红（慢格也绿），速度=绿/黄/红")
 
 # 汇总文本含快速扫描覆盖率行（英文口径）
@@ -215,14 +232,16 @@ app2.update()
 app2.var_target.set(SMALL)
 app2.var_fio.set(FIO)
 app2.var_bs.set("1M")              # 显式块大小：8 块，断言确定
+app2.var_seg.set("4M")             # 分段下拉恢复：8MB/4M = 2 段
+                                 # （默认 4G > 8MB 会合成 1 段，测不到多段聚合）
 app2.var_quick.set(False)
 app2._start_scan()
 assert app2.scan_quick is False
-# 固定格数：8MB 小盘同样 256 格。默认分段固定 256 段 → 32KB/段 < 块大小
-# 1M，plan_cell_segments 退化为整盘一次：单段 (0, None) 覆盖全部 256 格
+# 固定格数：8MB 小盘同样 256 格；2 段各覆盖 128 格（4M 段 = 128 格 × 32KB）
 assert len(app2.cells) == H.MAP_CELLS, len(app2.cells)
-assert len(app2.seg_cells) == 1, len(app2.seg_cells)
-assert app2.seg_cells[0] == list(range(0, 256)), app2.seg_cells[0][:3]
+assert len(app2.seg_cells) == 2, len(app2.seg_cells)
+assert app2.seg_cells[0] == list(range(0, 128)), app2.seg_cells[0][:3]
+assert app2.seg_cells[1] == list(range(128, 256)), app2.seg_cells[1][:3]
 t0 = time.time()
 while time.time() - t0 < 60:
     app2.update()
@@ -234,20 +253,24 @@ else:
 app2.update()
 s2 = app2.summary
 assert s2 and not s2.get("quick"), s2
-assert len(s2["segments"]) == 1
+assert len(s2["segments"]) == 2
 assert s2["n_blocks"] == 8, s2["n_blocks"]
-# 整盘一次：单段覆盖全部 256 格，每格 8 块（1M 块大小 / 8MB 盘）
+# 段少格多：2 段覆盖全部 256 格，每格 4 块（1M 块大小 / 4M 段）
 filled2 = sum(1 for c in app2.cells if c["median"] is not None)
 print("全段扫描: %d 段 %d 块 | 填充 %d/%d 格 | 耗时 %.1fs"
       % (len(s2["segments"]), s2["n_blocks"], filled2, len(app2.cells),
          s2["elapsed_s"]))
 assert filled2 == H.MAP_CELLS, filled2
-assert all(c["n"] == 8 for c in app2.cells), [c["n"] for c in app2.cells[:4]]
+assert all(c["n"] == 4 for c in app2.cells), [c["n"] for c in app2.cells[:4]]
+# 逐格渲染：每段覆盖 128 格，队列排干后全部格子按健康模式着绿色
+_drain(app2)
+assert all(app2.canvas_map.itemcget(it, "fill") == H.COLOR_OK
+           for it in app2.cell_items), "全部格子应为绿色"
 app2._on_canvas_motion(types.SimpleNamespace(
     x=int(app2.grid_ox + app2.cell_pitch / 2),
     y=int(app2.grid_oy + app2.cell_pitch / 2)))
 hover2 = app2.lbl_hover.cget("text")
-assert "Cell #1/256" in hover2 and "read 8 blocks" in hover2, hover2
+assert "Cell #1/256" in hover2 and "read 4 blocks" in hover2, hover2
 print("全段扫描悬停: %r" % hover2)
 app2._cancel_timers()
 app2.destroy()

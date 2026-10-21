@@ -56,8 +56,9 @@ assert "Permission" in admin_txt, admin_txt
 print("Permission status: %s (is_admin=%s)" % (admin_txt, H.is_admin()))
 assert app.btn_start.cget("text") == "Start scan"
 assert app.combo_bs["values"][0] == "Auto", app.combo_bs["values"]
-# 分段下拉已移除：默认按热力图格数分段（GUI 不再暴露分段大小选择）
-assert not hasattr(app, "combo_seg"), "segment dropdown must be removed"
+# 分段下拉恢复：默认 4G，可选整盘一次/512M/1G/2G/4G/8G/16G/32G/64G
+assert "Whole disk at once" in app.combo_seg["values"][0], app.combo_seg["values"]
+assert app.var_seg.get() == "4G", app.var_seg.get()
 
 # ---- 热力图双模式（默认健康；可切速度）----
 assert app.combo_map_mode["values"] == ("Disk health", "Read speed"), \
@@ -561,6 +562,29 @@ assert os.listdir(_LOG_DIR) == ["HD_Doc.log"], \
     "exactly one log file: %r" % (os.listdir(_LOG_DIR),)
 print("Run log OK (single file %s, %d bytes)"
       % (_log_file, os.path.getsize(_log_file)))
+
+# ---- 逐格渲染：一次只上色一格（用户要求"一个一个渲染，不要一次渲染
+#      多个"——4G 段跨 1-2 格时也不能两格同时亮） ----
+app._reset_map([(0, 4 << 20, None), (4 << 20, 4 << 20, None)])
+for i in range(5):
+    app.cells[i]["median"] = 1000.0
+    app.cells[i]["n"] = 1
+app.dirty.update(range(5))
+_fills = lambda: [app.canvas_map.itemcget(it, "fill")
+                  for it in app.cell_items[:5]]
+_before = _fills()
+assert all(f == H.COLOR_PENDING for f in _before), _before
+app._flush_cells(force=True)          # 第一拍：只点亮第 1 格
+_after1 = _fills()
+assert [i for i in range(5) if _before[i] != _after1[i]] == [0], _after1
+app._flush_cells(force=True)          # 第二拍：才点亮第 2 格（索引顺序）
+_after2 = _fills()
+assert [i for i in range(5) if _after1[i] != _after2[i]] == [1], _after2
+for _ in range(3):                    # 剩余格子逐拍排干
+    app._flush_cells(force=True)
+assert not app.dirty, "待渲染格子应已排干"
+assert all(f == H.COLOR_OK for f in _fills()), _fills()   # 健康模式无错误→绿
+print("逐格渲染 OK：每次只亮一格，按索引顺序逐拍点亮")
 
 app.destroy()
 root.destroy()
