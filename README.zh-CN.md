@@ -222,7 +222,7 @@ python test/test_cli_stop.py       # CLI Ctrl+C
 python test/test_cli_gate.py       # 提权门禁 + CLI 实扫
 python test/test_gui_gate.py       # GUI 提权门禁
 python test/test_hdd_stop.py       # 真实硬件中途停止
-python test/test_job_kill.py       # fio 随父进程连坐终止（任务管理器强杀）
+python test/test_job_kill.py       # fio 连坐终止 + 父进程监控（任务管理器强杀）
 ```
 
 依赖 fio 的套件需要机器上装有 fio（Windows 自动找

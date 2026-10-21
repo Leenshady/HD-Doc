@@ -1878,6 +1878,93 @@ def _create_kill_on_close_job():
         return None, None
 
 
+def _parent_process_handle():
+    """打开父进程句柄（SYNCHRONIZE，仅 Windows）。失败/非 Windows 返回 None。
+
+    用工具快照找本进程的 ppid 再 OpenProcess——句柄必须长期持有：
+    父进程退出后句柄仍然有效（内核对象引用计数），WaitForSingleObject
+    才能收到通知。onefile 打包下父进程是 PyInstaller bootloader。
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD),
+                        ("cntUsage", wintypes.DWORD),
+                        ("th32ProcessID", wintypes.DWORD),
+                        ("th32DefaultHeapID", ctypes.c_void_p),
+                        ("th32ModuleID", wintypes.DWORD),
+                        ("cntThreads", wintypes.DWORD),
+                        ("th32ParentProcessID", wintypes.DWORD),
+                        ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", wintypes.DWORD),
+                        ("szExeFile", ctypes.c_char * 260)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                         wintypes.DWORD]
+        snap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)  # SNAPPROCESS
+        if not snap or snap == wintypes.HANDLE(-1).value:
+            return None
+        try:
+            entry = PROCESSENTRY32()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            me = os.getpid()
+            parent_pid = 0
+            ok = kernel32.Process32First(snap, ctypes.byref(entry))
+            while ok:
+                if entry.th32ProcessID == me:
+                    parent_pid = entry.th32ParentProcessID
+                    break
+                ok = kernel32.Process32Next(snap, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snap)
+        if not parent_pid or parent_pid == me:
+            return None
+        return kernel32.OpenProcess(0x00100000, False, parent_pid) or None
+    except Exception:
+        return None
+
+
+def watch_parent_process(on_death):
+    """后台线程等待父进程死亡（Windows 版 PDEATHSIG），返回线程或 None。
+
+    动机：onefile 进程树是 bootloader(父) → python(本进程) → fio(子)。
+    任务管理器结束**上面那个同名进程**（bootloader）时，本进程与 fio
+    不会跟着退（Job Object 只覆盖"本进程死"，父死不触发），会变成孤儿
+    继续把整盘读完。父死后调用 on_death()——调用方应同步终止 fio 并退出。
+    任何失败（权限/平台）静默返回 None，不影响正常流程。
+    """
+    handle = _parent_process_handle()
+    if not handle:
+        return None
+
+    def _watch():
+        try:
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.WaitForSingleObject.restype = wintypes.DWORD
+            kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE,
+                                                     wintypes.DWORD]
+            kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)  # INFINITE
+        except Exception:
+            return
+        try:
+            on_death()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_watch, daemon=True, name="parent-watch")
+    t.start()
+    return t
+
+
 class FioScanner:
     """fio 扫描编排：分段执行、流式解析、聚合统计"""
 
@@ -1899,6 +1986,28 @@ class FioScanner:
         if p is not None and p.poll() is None:
             try:
                 p.terminate()
+            except Exception:
+                pass
+
+    def kill_fio_now(self):
+        """同步终止当前 fio 并等待退出（最多 3 秒，超时强杀）。
+
+        供父进程监控回调等"扫描线程可能已不可靠"的场景：stop() 只置
+        事件+发 terminate，真正 wait 的是扫描线程；这里直接 wait，确保
+        调用方退出前 fio 已死，不留孤儿继续读盘。无 fio 运行时是 no-op。
+        """
+        p = self._proc
+        if p is None or p.poll() is not None:
+            return
+        try:
+            p.terminate()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            try:
+                p.kill()
             except Exception:
                 pass
 

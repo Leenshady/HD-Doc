@@ -1189,6 +1189,23 @@ class HDDocApp(ttk.Window):
         core.log_event("gui: exit")
         self.destroy()
 
+    def _on_parent_died(self):
+        """父进程（onefile bootloader）被外部杀死时的退出路径。
+
+        任务管理器结束上面那个同名进程（bootloader）时，本进程与 fio
+        不会跟着退（Job Object 只覆盖"本进程死"的方向），会变孤儿继续
+        把整盘读完。父进程句柄等待发现父死后：同步终止 fio 并立即退出。
+        配置均为即时保存，无需走优雅退出；退出码 3 仅供日志辨识。
+        """
+        core.log_event("gui: parent bootloader died; killing fio and exiting",
+                       level="WARN")
+        try:
+            if self.scanner:
+                self.scanner.kill_fio_now()
+        except Exception:
+            pass
+        os._exit(3)
+
     # ---------------------------------------------------------- 网格（固定格数 · 按字节范围聚合）
     def _reset_map(self, seg_meta, total_size=None):
         """按固定格数重建热力图（UI 一致性：任何扫描都是 MAP_CELLS 格、

@@ -149,6 +149,11 @@ def main(argv=None):
         core.log_event("startup: relaunched elevated; this process exits")
         return 0
     app = HDDocApp()
+    # onefile 父进程（bootloader）被外部杀死时（任务管理器结束上面那个
+    # 同名进程），本进程与 fio 不会跟着退、会变孤儿继续读盘：父进程监控
+    # （Windows 版 PDEATHSIG）发现父死后同步杀 fio 并退出。Job Object
+    # 只覆盖"本进程死"的连坐方向，这里是反向兜底。
+    core.watch_parent_process(app._on_parent_died)
     app.mainloop()
     core.log_event("gui: mainloop returned")
     return 0

@@ -169,6 +169,16 @@ def cli_main(args):
 
     state = {"last_print": 0.0, "tick": None}
     scanner = FioScanner(fio)
+    # onefile 父进程（bootloader）被外部杀死时（任务管理器结束上面那个
+    # 同名进程），本进程与 fio 不会跟着退、会变孤儿继续读盘：父进程监控
+    # 发现父死后同步杀 fio 并退出（与 GUI 同一机制，见 core.watch_parent_process）
+    def _on_parent_died():
+        core.log_event("cli: parent bootloader died; killing fio and exiting",
+                       level="WARN")
+        scanner.kill_fio_now()
+        os._exit(3)
+
+    core.watch_parent_process(_on_parent_died)
     # 快速扫描的进度/ETA 按"计划读取量"（抽样总量）计算，而不是磁盘容量：
     # 1TB 盘抽样 1.8GB 若按整盘算 ETA 会显示剩余十几分钟（实测误导），
     # 按 1.8GB 算才是真实剩余时间
