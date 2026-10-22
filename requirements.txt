@@ -1,4 +1,7 @@
 # HD Doc runtime dependencies
 #   CLI mode needs none of these (pure standard library);
-#   GUI mode is built on ttkbootstrap (which requires tkinter).
-ttkbootstrap>=2.0
+#   GUI mode is built on PyQt5. python3-pyqt5 ships in Debian/Ubuntu/
+#   Kylin/openKylin repositories; pip wheels cover Windows. Pin to the
+#   5.15 LTS line (last Qt5 release; PyQt6 would need Qt6 packages that
+#   Kylin V10 / Ubuntu 20.04 repositories do not provide).
+PyQt5>=5.15,<5.16

@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HD_Doc_gui.py —— GUI 模式（ttkbootstrap；只依赖 HD_Doc_core）
+HD_Doc_gui.py —— GUI 模式（PyQt5；只依赖 HD_Doc_core）
 
 本模块只在 GUI 模式下被入口 HD_Doc.py 导入；
-没有 ttkbootstrap 的环境（如 --cli 命令行模式）永远不会加载本模块。
+没有 PyQt5 的环境（如 --cli 命令行模式）永远不会加载本模块。
+
+为什么用 PyQt5 而不是 ttkbootstrap（tkinter）：
+  - 跨系统一致性：tkinter 在不同发行版上依赖系统 tk（Windows 的 tk8.6、
+    Ubuntu/麒麟的 tk8.6 主题与渲染差异明显，HiDPI 下还会发虚）；PyQt5 的
+    绘制完全由 Qt 自己完成，Windows / Ubuntu / 银河麒麟（UKUI）下界面
+    像素级一致，且天然支持高分屏缩放；
+  - 发行版支持：python3-pyqt5 在 Debian/Ubuntu/银河麒麟/openKylin 的
+    软件源里都有（麒麟 V10 = Ubuntu 20.04 基座），无需 pip 编译；
+  - 绘制性能：热力图 256 格用 QPainter 批量填充，逐格渲染的开销远低于
+    逐个 create_rectangle/itemconfig 的 Tk 对象操作。
 
 界面语言：默认英文，菜单 Language/语言 可切换到任何已安装语言
 （菜单由 lang/*.json 自动发现生成，新增语言零代码改动），选择持久化在
@@ -19,11 +29,10 @@ UAC 确认后由提权后的新进程接管、本进程退出；取消则保持�
 权限继续运行（扫镜像文件不需要管理员）。扫描物理盘时若仍未
 提权，同样直接弹 UAC，不再弹二次确认框。
 
-界面主题：ttkbootstrap 主题（默认浅色 bootstrap-light，可切换深色
-bootstrap-dark），选择同样持久化；切换主题 = 保存偏好 + 实时
-theme_use() 换色（ttk 控件由主题引擎自动重绘，少数原生 tk 控件
-手工同步），同样不重启进程。所有控件颜色取自当前主题
-（style.colors），不写死十六进制色值，深浅两主题通用。
+界面主题：浅色/深色两套 QSS 样式表（默认浅色），选择持久化；
+切换主题 = 保存偏好 + 整体换 stylesheet（QSS 作用于整个
+QApplication，含消息框/下拉弹层等所有标准对话框），语义色
+（热力图绿/黄/红/灰、横幅与状态级别色）与主题无关，两套通用。
 """
 
 import os
@@ -34,27 +43,35 @@ import threading
 import time
 from datetime import datetime
 
-import ttkbootstrap as ttk
-from ttkbootstrap.dialogs import Messagebox
-import tkinter as tk
-from tkinter import filedialog
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QDesktopWidget,
+                             QDialog, QFileDialog, QGridLayout,
+                             QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                             QMessageBox, QPlainTextEdit,
+                             QProgressBar, QPushButton, QSizePolicy,
+                             QTreeWidget, QTreeWidgetItem, QTabWidget,
+                             QVBoxLayout, QWidget)
 
 import HD_Doc_core as core                      # 业务逻辑全部经 core
 from HD_Doc_core import *                       # 常用名直接可用（调用点不变）
 from HD_Doc_core import _pythonw_path           # 下划线名需显式导入
 
-# 横幅级别 → ttkbootstrap bootstyle（颜色随主题自动切换：浅色/深色通用）
-BANNER_BOOTSTYLE = {"info": "info", "ok": "success",
-                    "warn": "warning", "error": "danger"}
+# 横幅级别 → (背景色, 文字色)。语义色与主题无关：浅/深两套 QSS 下都用
+# 同一组饱和色 + 白字，与 ttkbootstrap 的 bootstyle 视觉一致。
+BANNER_STYLE = {"info": ("#1565c0", "#ffffff"),
+                "ok": ("#2e7d32", "#ffffff"),
+                "warn": ("#ef6c00", "#ffffff"),
+                "error": ("#c62828", "#ffffff")}
 
-# 状态行语义键 → bootstyle（_set_state 用；切换语言重建界面时按键重放）
-STATE_BOOTSTYLE = {"gui.state_ready": "secondary",
-                   "gui.state_scanning": "info",
-                   "gui.state_stopping": "warning",
-                   "gui.state_stopped": "secondary",
-                   "gui.state_done": "success",
-                   "gui.state_done_aborted": "success",
-                   "gui.state_failed": "danger"}
+# 状态行语义键 → (背景色, 文字色)；neutral 色随主题取（见 _state_style）
+STATE_ACCENT = {"gui.state_ready": "neutral",
+                "gui.state_scanning": "#1565c0",
+                "gui.state_stopping": "#ef6c00",
+                "gui.state_stopped": "neutral",
+                "gui.state_done": "#2e7d32",
+                "gui.state_done_aborted": "#2e7d32",
+                "gui.state_failed": "#c62828"}
 
 # 热力图双模式（下拉选项顺序即下标语义，跨语言稳定）：
 #   健康模式——只按"有没有读取错误"判定：绿=正常、红=读取错误
@@ -64,6 +81,76 @@ STATE_BOOTSTYLE = {"gui.state_ready": "secondary",
 # 不显示灰色会把未扫区域误读成"健康"。
 MAP_MODE_HEALTH = 0
 MAP_MODE_SPEED = 1
+
+# 主题名沿用 core 的 THEMES（配置持久化兼容）：bootstrap-light/dark
+# 只是名字，渲染完全由下面的 QSS + 色板决定。
+THEME_COLORS = {
+    "bootstrap-light": dict(
+        bg="#f0f0f0", base="#ffffff", border="#c8c8c8", text="#1f1f1f",
+        muted="#5f5f5f", selection_bg="#1976d2", selection_fg="#ffffff",
+        neutral_bg="#e4e4e4", neutral_fg="#333333",
+        tab_bg="#e8e8e8", tab_sel="#ffffff", input_bg="#ffffff",
+        hover_bg="#eaf2fb", hover_border="#8bb3e8", chunk="#1976d2",
+        menubar_bg="#f0f0f0"),
+    "bootstrap-dark": dict(
+        bg="#2b2d30", base="#2b2b2b", border="#5a5d5f", text="#dcdcdc",
+        muted="#9a9da0", selection_bg="#3daee9", selection_fg="#101010",
+        neutral_bg="#4a4d50", neutral_fg="#dddddd",
+        tab_bg="#35373a", tab_sel="#3c3f41", input_bg="#2b2b2b",
+        hover_bg="#45484b", hover_border="#7a7d7f", chunk="#3daee9",
+        menubar_bg="#2b2d30"),
+}
+
+_QSS_TEMPLATE = """
+QWidget {{ background: {bg}; color: {text}; font-size: 9pt; }}
+QGroupBox {{ border: 1px solid {border}; border-radius: 4px;
+             margin-top: 8px; padding: 4px 4px 8px 4px; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 3px; }}
+QPushButton {{ background: {base}; border: 1px solid {border};
+               border-radius: 3px; padding: 4px 10px; min-height: 18px; }}
+QPushButton:hover {{ background: {hover_bg}; border-color: {hover_border}; }}
+QPushButton:pressed {{ background: {chunk}; color: #ffffff; }}
+QPushButton:disabled {{ color: {muted}; background: {bg};
+                        border-color: {border}; }}
+QPushButton#btn_start {{ background: {chunk}; color: #ffffff; border: none; }}
+QPushButton#btn_start:hover {{ background: {hover_border}; }}
+QPushButton#btn_start:pressed {{ background: {border}; }}
+QPushButton#btn_start:disabled {{ background: {border}; color: {muted}; }}
+QPushButton#btn_stop {{ color: #c62828; border: 1px solid #c62828;
+                        background: {base}; }}
+QPushButton#btn_stop:hover {{ background: #fdecea; }}
+QPushButton#btn_stop:disabled {{ color: {muted}; border-color: {border};
+                                  background: {bg}; }}
+QComboBox {{ background: {input_bg}; border: 1px solid {border};
+             border-radius: 3px; padding: 3px 6px; }}
+QComboBox:disabled {{ color: {muted}; background: {bg}; }}
+QComboBox QAbstractItemView {{ background: {input_bg}; color: {text};
+    selection-background-color: {selection_bg};
+    selection-color: {selection_fg}; }}
+QComboBox QAbstractItemView:item {{ min-height: 20px; }}
+QCheckBox {{ background: transparent; }}
+QPlainTextEdit, QTreeWidget {{ background: {input_bg}; color: {text};
+                               border: 1px solid {border}; }}
+QTreeWidget::item:selected {{ background: {selection_bg};
+                              color: {selection_fg}; }}
+QTabWidget::pane {{ border: 1px solid {border}; }}
+QTabBar::tab {{ background: {tab_bg}; border: 1px solid {border};
+                padding: 5px 12px; }}
+QTabBar::tab:selected {{ background: {tab_sel}; }}
+QProgressBar {{ border: 1px solid {border}; border-radius: 3px;
+                text-align: center; background: {input_bg}; }}
+QProgressBar::chunk {{ background: {chunk}; }}
+QMenuBar {{ background: {menubar_bg}; }}
+QMenuBar::item:selected {{ background: {selection_bg};
+                           color: {selection_fg}; }}
+QMenu {{ background: {base}; border: 1px solid {border}; }}
+QMenu::item:selected {{ background: {selection_bg}; color: {selection_fg}; }}
+QToolTip {{ background: #ffffe1; color: #000000;
+            border: 1px solid #767676; }}
+"""
+
+THEME_QSS = {name: _QSS_TEMPLATE.format(**colors)
+             for name, colors in THEME_COLORS.items()}
 
 
 def _resource_dir():
@@ -77,20 +164,39 @@ def _resource_dir():
 ABOUT_ICON_PX = 48
 
 
-def _bounded_photo(img, max_px=ABOUT_ICON_PX):
-    """PhotoImage 等比缩到 max_px 以内。
+def _bounded_pixmap(path, max_px=ABOUT_ICON_PX):
+    """QPixmap 等比缩到 max_px 以内（SmoothTransformation，模糊但不会
+    出现 Tk subsample 的点采样噪点；原图任一边已不超上限时原样返回）。"""
+    pm = QPixmap(path)
+    if pm.isNull() or max(pm.width(), pm.height()) <= max_px:
+        return pm
+    return pm.scaled(max_px, max_px, Qt.KeepAspectRatio,
+                     Qt.SmoothTransformation)
 
-    PhotoImage 只有 subsample（整数倍点采样）可用、且运行时无 PIL 依赖。
-    subsample 的结果尺寸是向上取整（如 1024/21→49），所以因子必须按
-    向上取整算：factor = ceil(长边/max_px)，否则原图边长不是 max_px
-    整数倍时会超出上限（1024 主图按 // 算得 21 → 49px > 48）。
-    原图任一边已不超上限时原样返回（避免多余拷贝）。
+
+def _mono_font():
+    """等宽字体（日志/汇总页）：优先 Consolas（Windows），缺失时按
+    Monospace 风格提示由 Qt 在各平台选系统等宽字体（麒麟/Ubuntu 的
+    DejaVu Sans Mono 等），不写死单一字体名。"""
+    f = QFont("Consolas")
+    f.setStyleHint(QFont.Monospace)
+    f.setFixedPitch(True)
+    return f
+
+
+def _qt_excepthook(exc_type, exc_value, exc_tb):
+    """Qt 槽/事件回调未捕获异常 → 运行日志。
+
+    PyQt5 对槽里逃出的异常默认走 sys.excepthook（打印到 stderr 后继续，
+    打包版 --windowed 没有控制台 → 用户什么都看不到）。这里连同堆栈
+    落盘，便于事后排查；同时保留 stderr 打印（源码调试用）。
     """
-    long_edge = max(img.width(), img.height())
-    if long_edge <= max_px:
-        return img
-    factor = -(-long_edge // max_px)          # ceil 除法
-    return img.subsample(factor, factor)
+    import traceback
+    try:
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+    except Exception:
+        pass
+    core.log_exception("qt callback exception", exc_value)
 
 
 def ensure_admin_at_startup():
@@ -109,8 +215,8 @@ def ensure_admin_at_startup():
     平台差异：Windows 用 ShellExecuteEx("runas")，取消时同步返回错误、
     立刻可知；Linux 没有 UAC，用 pkexec 异步启动（授权期间 pkexec 一直
     存活），因此这里轮询约 2.5 秒：pkexec 很快退出 = 授权被取消或
-    pkexec 不可用 → 保持标准权限继续启动（Ubuntu 桌面图标点击时同样
-    会弹 polkit 密码框，与 Windows 的 UAC 体验一致）。
+    pkexec 不可用 → 保持标准权限继续启动（Ubuntu/麒麟桌面图标点击时
+    同样会弹 polkit 密码框，与 Windows 的 UAC 体验一致）。
     """
     if is_admin() or not auto_elevate_enabled():
         return False
@@ -148,22 +254,136 @@ def ensure_admin_at_startup():
     return False
 
 
-class HDDocApp(ttk.Window):
+class MapWidget(QWidget):
+    """热力图绘制部件：256 格平铺（布局由 core.plan_grid 计算，数据与
+    颜色判定全部在 app 侧，本类只负责画）。
+
+    与 ttk Canvas 的对应关系：
+      - itemconfig(fill=...) → app 改 cells 数据后调用本部件 update()
+        （Qt 重绘由 paintEvent 统一按当前模式/阈值重新取色，不需要
+        像 Tk 那样逐个 item 改色）；
+      - <Motion> → mouseMoveEvent（setMouseTracking 无按键也收移动事件）；
+      - <Leave> → leaveEvent；
+      - <Configure> → resizeEvent（app 侧 50ms 防抖后重排）。
+    """
+
+    def __init__(self, app):
+        super().__init__(app.map_frame)
+        self.app = app
+        self.setMouseTracking(True)
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def paintEvent(self, ev):
+        app = self.app
+        try:
+            p = QPainter(self)
+            p.fillRect(self.rect(), QColor(THEME_COLORS[get_theme()]["base"]))
+            if not app.cells:
+                return
+            cols = max(1, app.grid_cols)
+            pitch = app.cell_pitch
+            size = max(CELL_SIZE_MIN, int(pitch) - CELL_GAP)
+            ox, oy = app.grid_ox, app.grid_oy
+            for i in range(len(app.cells)):
+                color = app._cell_color(i)
+                x = ox + (i % cols) * pitch
+                y = oy + (i // cols) * pitch
+                p.fillRect(int(x), int(y), size, size, QColor(color))
+        except Exception as e:            # 绝不让异常逃进 Qt 事件循环
+            core.log_exception("heatmap paint failed", e)
+
+    def mouseMoveEvent(self, ev):
+        self.app._on_map_hover(ev.x(), ev.y())
+
+    def leaveEvent(self, ev):
+        self.app._on_map_hover(None, None)
+
+    def resizeEvent(self, ev):
+        # 尺寸变化（窗口缩放/最大化/DPI 变化/语言重建后重映射）：
+        # 交 app 侧 50ms 防抖合并成一次重排（拖拽缩放会连续触发）
+        super().resizeEvent(ev)
+        self.app._on_map_resize()
+
+
+class AboutDialog(QDialog):
+    """关于对话框（模态）：图标 + 标题 + 说明 + 确定。
+
+    对应 ttk 版的 _show_about：Esc/关闭 = 取消；确定按钮默认聚焦；
+    居中于父窗口。
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle(tr("gui.about.title"))
+        self.setModal(True)
+        self.setSizeGripEnabled(False)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 24, 24, 18)
+        head = QHBoxLayout()
+        icon_path = os.path.join(_resource_dir(), "HD_Doc.png")
+        if os.path.isfile(icon_path):
+            pm = _bounded_pixmap(icon_path)
+            if not pm.isNull():
+                lbl_icon = QLabel()
+                lbl_icon.setPixmap(pm)
+                head.addWidget(lbl_icon)
+        lbl_title = QLabel(tr("gui.title", ver=VERSION))
+        f = lbl_title.font()
+        f.setBold(True)
+        f.setPointSize(f.pointSize() + 3)
+        lbl_title.setFont(f)
+        head.addWidget(lbl_title)
+        head.addStretch(1)
+        lay.addLayout(head)
+        lbl_body = QLabel(tr("gui.about.body"))
+        lbl_body.setWordWrap(True)
+        lbl_body.setMaximumWidth(440)
+        lbl_body.setMinimumWidth(360)
+        lbl_body.setAlignment(Qt.AlignCenter)
+        lay.addWidget(lbl_body)
+        lay.addSpacing(8)
+        btn = QPushButton(tr("gui.about.ok"))
+        btn.setObjectName("btn_ok_about")
+        btn.clicked.connect(self.accept)
+        lay.addWidget(btn, 0, Qt.AlignHCenter)
+        # 居中于父窗口（show 后父窗口几何才稳定）
+        self._center(parent)
+        btn.setFocus()
+
+    def _center(self, parent):
+        try:
+            pg = parent.geometry()
+            self.adjustSize()
+            x = pg.x() + (pg.width() - self.width()) // 2
+            y = pg.y() + (pg.height() - self.height()) // 2
+            self.move(max(0, x), max(0, y))
+        except Exception:
+            pass
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(ev)
+
+
+class HDDocApp(QMainWindow):
     def __init__(self):
-        # 主题来自持久化偏好（见 HD_Doc_core 的 get_theme/set_theme）
-        # className="HD_Doc"：设置 WM_CLASS 的 res_class，GNOME/KDE 据此把
-        # 运行中的窗口匹配到 .desktop 文件（配合 StartupWMClass），否则程序
-        # 坞里会显示默认的齿轮状兜底图标而不是应用图标（用户反馈）
-        super().__init__(themename=get_theme(), className="HD_Doc")
-        self.withdraw()               # 构建期不显示，避免默认位置闪一下
-        self.title(tr("gui.title", ver=VERSION))
-        self.geometry("1140x820")
-        self.minsize(980, 700)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        super().__init__()
+        # 异常落日志（PyQt5 槽异常默认走 sys.excepthook；打包版无控制台）
+        sys.excepthook = _qt_excepthook
+        self.setObjectName("HD_Doc")
+        # QApplication.setApplicationName/setDesktopFileName 在入口设置；
+        # 这里再确保一次（测试直接实例化本类时）
+        QApplication.setApplicationName("HD_Doc")
+        QApplication.setDesktopFileName("hd-doc")
+        self.setWindowTitle(tr("gui.title", ver=VERSION))
+        self.resize(1140, 820)
+        self.setMinimumSize(980, 700)
         self._target_paths = {}       # 下拉标签 → 裸设备路径（型号显示用）
-        self._icon_img = None         # PhotoImage 引用，防止被 GC
-        self._about_icon = None       # 弹窗内小图标（_bounded_photo 缩放版）
-        # pkexec 提权轮询（Linux）：_relaunch_elevated 发起后用 after 链
+        self._about_icon = None       # 弹窗内小图标（_bounded_pixmap 缩放版）
+        # pkexec 提权轮询（Linux）：_relaunch_elevated 发起后用定时器
         # 观察子进程存活——授权取消/失败时 pkexec 很快退出，此时必须保留
         # 本窗口并提示，不能像旧版那样 200ms 后无条件退出（表现为"闪退"）
         self._pkexec_popen = None
@@ -173,7 +393,6 @@ class HDDocApp(ttk.Window):
         self.scanner = None
         self.worker = None
         self.cells = []
-        self.cell_items = []
         self.dirty = set()
         self.grid_cols = 1
         self.grid_rows = 1
@@ -185,8 +404,8 @@ class HDDocApp(ttk.Window):
         self.seg_cells = []         # 每段覆盖的格下标列表（聚合映射）
         self.cell_region = []       # 每格由哪个段/区域供数（悬停显示抽样上下文）
         self._map_wh = None         # 上次布局采用的画布尺寸（缩放事件去重）
-        self._map_cfg_after = None  # 挂起的 <Configure> 防抖回调（退出时取消）
         self._err_seen = set()      # 已计入热力图的错误块（事件/汇总去重）
+        self._painted = []          # 每格上次渲染的颜色（_queue_recolor 比对）
         self.total_size = None
         self.planned_bytes = 0   # 快速扫描的计划读取量（进度/ETA 分母）
         self.thresholds = 0.0
@@ -197,6 +416,7 @@ class HDDocApp(ttk.Window):
         self.seg_base = []
         self._last_thresh_calc = 0.0
         self._last_flush = 0.0
+        self._progress_indeterminate = False
         # 结构化日志/横幅：切换语言重建界面时按新语言重放（_render_log /
         # _render_banner）。日志条目 ("i18n", stream, key, kw) 可重翻译，
         # ("raw", stream, line) 为 fio 原始输出，原样保留。
@@ -208,127 +428,138 @@ class HDDocApp(ttk.Window):
 
         # 界面语言与主题（切换即原地重建/换色，不重启进程，
         # 见 _set_language / _set_theme / _rebuild_ui）
-        self.var_lang = tk.StringVar(value=get_language())
-        self.var_theme = tk.StringVar(value=get_theme())
+        self._lang = get_language()
+        self._theme = get_theme()
 
         # 热力图模式（健康/读取速度）：_build_ui 建下拉前就绪，
         # 切换语言重建界面时按快照下标恢复（见 _rebuild_ui）
         self.map_mode = MAP_MODE_HEALTH
 
+        # ---- 定时器（重建/退出时统一管理）----
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_queue)
+        self._pkexec_timer = QTimer(self)
+        self._pkexec_timer.timeout.connect(self._poll_pkexec)
+        self._pkexec_timer.setInterval(150)
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(50)
+        self._resize_timer.timeout.connect(self._flush_map_configure)
+
         self._setup_theme()
         self._set_window_icon()
-        self._build_ui()
+        # central widget 必须先建：_build_ui 的所有控件都以它为父
+        # （与 ttk 版"窗口本身就是控件容器"对应；_rebuild_ui 换 central
+        #  即等效"销毁全部子控件后重建"）
+        self._central = QWidget(self)
+        self.setCentralWidget(self._central)
+        self._build_ui(self._central)
         self._refresh_drives()
         self._center_on_screen()
-        self._poll_after = self.after(100, self._poll_queue)
-        self._admin_after = self.after(200, self._startup_admin_check)
-        # Tk 回调里未捕获的异常默认只打印到 stderr（打包版没有控制台 →
-        # 用户什么都看不到）：统一落到运行日志，便于事后排查
-        self.report_callback_exception = self._on_tk_exception
+        self._poll_timer.start(100)
+        QTimer.singleShot(200, self._startup_admin_check)
         core.log_event("gui: start ver=%s frozen=%s admin=%s lang=%s theme=%s"
                        % (VERSION, getattr(sys, "frozen", False), is_admin(),
                           get_language(), get_theme()))
 
     # ---------------------------------------------------------- 主题与图标
     def _setup_theme(self):
-        """ttkbootstrap 主题定制（主题本身在 Window 构造时按 get_theme()
-        选定；切换主题走 theme_use() 实时换色，这里只做一次性微调，
-        颜色不写死）。
+        """应用当前主题的 QSS（浅色/深色）+ 全局 UI 字体。
 
-        - set_global_family：全局字体走系统 UI 字体（Windows 即 Segoe UI，
-          非 Windows 自动回退），与 clam 时代的硬编码效果一致；
-        - Treeview 行高/表头内边距：主题默认偏挤，错误块表格需要呼吸感。
-        （幂等：切换主题后也会再调一次，保证定制不被主题默认值覆盖。）
+        QSS 挂在 QApplication 上：整个进程的标准控件（含下拉弹层、
+        QMessageBox、QFileDialog）一起换肤，不需要像 ttk 那样逐个
+        style.configure；语义色（横幅/状态/热力图）不走 QSS，由代码
+        直接给 stylesheet，两套主题通用。
         """
-        try:
-            ttk.set_global_family("Segoe UI")
-        except Exception:
-            pass
-        style = self.style
-        style.configure("Treeview", rowheight=26)
-        style.configure("Treeview.Heading", padding=(6, 4))
+        QApplication.instance().setStyleSheet(THEME_QSS[get_theme()])
 
     def _set_window_icon(self):
-        """标题栏 + 任务栏/Alt-Tab 图标（.png，经 iconphoto）。
+        """标题栏 + 任务栏/Alt-Tab 图标（.png，经 setWindowIcon）。
 
-        注意：iconbitmap(.ico) 只是兜底——Tk 的 Windows 端口渲染不了 PNG
-        压缩的 .ico（静默无效果，表现为标题栏图标空白），真正生效的是
-        随后 iconphoto 设置的那个 PNG（标题栏与任务栏都归它管）。
-        资源缺失时两者都静默跳过。"""
-        d = _resource_dir()
-        try:
-            self.iconbitmap(os.path.join(d, "HD_Doc.ico"))
-        except Exception:
-            pass
-        try:
-            # master=self 必须显式指定：默认 photo 会挂到第一个 Tk 实例上，
-            # 而 iconphoto 在本窗口调用时拒绝跨实例的 photo（TclError）
-            img = tk.PhotoImage(master=self, file=os.path.join(d, "HD_Doc.png"))
-            self.iconphoto(False, img)
-            self._icon_img = img      # 持有引用，防止被垃圾回收
-            # 弹窗里另存一份缩放版：原图 1248px，直接显示会撑爆对话框
-            try:
-                self._about_icon = _bounded_photo(img)
-            except Exception:
-                self._about_icon = img
-        except Exception:
-            pass
+        Qt 在 Windows/X11/Wayland 上都直接渲染 PNG，不存在 Tk 端口
+        "渲染不了 PNG 压缩的 .ico"的问题——一条路即可，.ico 仅作打包
+        版 exe 资源用（build_exe.py --icon）。资源缺失时静默跳过。"""
+        path = os.path.join(_resource_dir(), "HD_Doc.png")
+        if os.path.isfile(path):
+            self.setWindowIcon(QIcon(path))
+            self._about_icon = _bounded_pixmap(path)
+        else:
+            ico = os.path.join(_resource_dir(), "HD_Doc.ico")
+            if os.path.isfile(ico):
+                self.setWindowIcon(QIcon(ico))
 
     # ---------------------------------------------------------- 文案辅助
     # 文案全部经 tr() 取当前语言：切换语言会重建界面（_rebuild_ui），
     # 各构建函数重新执行即拿到新语言文案
     def _center_on_screen(self):
-        """启动时把窗口居中放到屏幕中间，并一次性显示（无位置闪烁）。
-
-        要点：未映射时发出的几何请求会被窗口管理器丢弃（实测位置/尺寸
-        都被改写），所以先 update() 让布局就绪，再用一个请求同时指定
-        尺寸与位置；构建期窗口是 withdraw 状态，deiconify 时按请求位置
-        直接出现，不会先在默认位置闪一下。
-        """
-        self.update_idletasks()
-        self.update()
-        w, h = 1140, 820              # 设计尺寸（与 __init__ 首行一致）
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        x = max(0, (sw - w) // 2)
-        y = max(0, (sh - h) // 2)
-        self.geometry("%dx%d+%d+%d" % (w, h, x, y))
-        self.deiconify()
+        """启动时把窗口居中放到屏幕中间（构建期 resize 请求会被窗口
+        管理器改写，show 前一次性指定尺寸与位置；offscreen 测试环境
+        屏幕几何为默认值，逻辑同样成立）。"""
+        self.adjustSize()
+        self.resize(1140, 820)          # 设计尺寸（与 __init__ 一致）
+        try:
+            geo = QDesktopWidget().availableGeometry(self)
+            self.move(max(0, (geo.width() - self.width()) // 2),
+                      max(0, (geo.height() - self.height()) // 2))
+        except Exception:
+            pass
 
     def _reg(self, widget, key, **kw):
         """设置静态文本控件（按钮/标签）的文案"""
-        widget.config(text=tr(key, **kw))
+        widget.setText(tr(key, **kw))
         return widget
 
-    def _reg_values(self, widget, key):
+    def _reg_values(self, combo, key):
         """设置下拉列表控件的选项文案"""
-        widget.config(values=tr_list(key))
-        return widget
+        combo.clear()
+        combo.addItems(tr_list(key))
+        return combo
 
     def _reg_tab(self, nb, child, key):
-        nb.add(child, text=tr(key))
+        nb.addTab(child, tr(key))
 
     def _reg_heading(self, tree, column, key):
-        tree.heading(column, text=tr(key))
+        """表头文案（列序固定：block/offset/desc）"""
+        heads = [tree.headerItem().text(i) for i in range(3)]
+        heads[column] = tr(key)
+        tree.setHeaderLabels(heads)
+
+    def _state_style(self, key):
+        """状态行 (bg, fg)：accent 语义色 + neutral 随主题"""
+        accent = STATE_ACCENT.get(key, "neutral")
+        if accent == "neutral":
+            c = THEME_COLORS[get_theme()]
+            return c["neutral_bg"], c["neutral_fg"]
+        return accent, "#ffffff"
 
     def _set_state(self, key):
         """状态行文案（记录语义键：切换语言重建界面时按新语言重放）"""
         self._state_key = key
-        self.lbl_state.config(text=tr(key),
-                              bootstyle=STATE_BOOTSTYLE.get(key, "secondary"))
+        bg, fg = self._state_style(key)
+        self.lbl_state.setText(tr(key))
+        self.lbl_state.setStyleSheet(
+            "background: %s; color: %s; border-radius: 3px; padding: 2px 8px;"
+            % (bg, fg))
         return self.lbl_state
 
     def _ask_yes(self, title, message):
-        """主题化的是/否确认框（替代 tkinter.messagebox）。
+        """是/否确认框（关闭扫描时用）。
 
-        按钮文案走 lang/*.json（gui.btn.yes / gui.btn.no），localize=False
-        关闭 ttkbootstrap 自带的按钮本地化，返回值与当前语言解耦，
-        中英文界面都能确定判断。用户关掉对话框时结果为 None → 视为否。
-        """
-        return Messagebox.yesno(
-            message, title, parent=self,
-            buttons=["%s:primary" % tr("gui.btn.yes"), tr("gui.btn.no")],
-            localize=False) == tr("gui.btn.yes")
+        按钮文案走 lang/*.json（gui.btn.yes / gui.btn.no）；返回 False
+        表示"否/取消"（默认按钮为否，防误触继续扫描）。"""
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(message)
+        box.setIcon(QMessageBox.Question)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        yes_btn = box.button(QMessageBox.Yes)
+        no_btn = box.button(QMessageBox.No)
+        if yes_btn:
+            yes_btn.setText(tr("gui.btn.yes"))
+        if no_btn:
+            no_btn.setText(tr("gui.btn.no"))
+        return box.exec_() == QMessageBox.Yes
 
     def _set_language(self, lang):
         """切换语言：保存偏好并原地重建界面（不重启进程）。
@@ -338,58 +569,46 @@ class HDDocApp(ttk.Window):
         fio 子进程、扫描结果都不受影响，因此扫描中也能切换。
         """
         if lang == get_language():
-            self.var_lang.set(lang)
+            self._lang = lang
             return
         if set_language(lang):          # 写入配置 + 进程内切换
             core.log_event("pref: language -> %s" % lang)
-            self.var_lang.set(lang)
+            self._lang = lang
             self._rebuild_ui()
 
     def _set_theme(self, theme):
-        """切换主题（浅色/深色）：保存偏好 + 实时 theme_use()，不重启进程。
+        """切换主题（浅色/深色）：保存偏好 + 整体换 QSS，不重启进程。
 
-        ttk 控件由 ttkbootstrap 主题引擎自动换色；少数不走主题引擎的
-        原生 tk 控件（热力图 Canvas 背景、图例色块边框）手工同步到
-        新主题色板（_apply_theme_to_tk_widgets）。同样不中断扫描。
+        QSS 作用于整个 QApplication（所有标准控件与对话框）；不走 QSS
+        的自绘部分（热力图背景）与语义色无关，只需重画一次；图例色块
+        边框色随主题手工同步（_apply_theme_to_legend）。
         """
         if theme == get_theme():
-            self.var_theme.set(theme)
+            self._theme = theme
             return
         if set_theme(theme):            # 写入配置 + 进程内切换
             core.log_event("pref: theme -> %s" % theme)
-            self.var_theme.set(theme)
-            self.style.theme_use(theme)
-            self._setup_theme()         # 行高等定制跨主题保留（幂等）
-            self._apply_theme_to_tk_widgets()
+            self._theme = theme
+            QApplication.instance().setStyleSheet(THEME_QSS[theme])
+            self._apply_theme_to_legend()
+            if self.map_widget:
+                self.map_widget.update()
 
-    def _apply_theme_to_tk_widgets(self):
-        """原生 tk 控件（不走 ttk 主题引擎）手工同步到当前主题色板：
-        热力图 Canvas 背景、图例色块边框（格子填充色是语义色，与主题
-        无关，不随主题切换）。"""
-        colors = self.style.colors
-        self.canvas_map.configure(bg=colors.bg)
-        for swatch in self._legend_swatches:
-            swatch.configure(highlightbackground=colors.border)
-
-    @staticmethod
-    def _bootstyle_of(widget):
-        """从 ttk 样式名反推 bootstyle（'danger.TLabel' → 'danger'）；
-        默认样式返回 None（ttkbootstrap 的 bootstyle 不是 Tcl 选项，
-        cget('bootstyle') 会抛 unknown option，但它落实在样式名上）。
-
-        只用于状态行标签的快照/恢复，它们只设朴素 bootstyle
-        （info/success/warning/danger/secondary），前缀即完整值；
-        outline 等复合样式的样式名含 'Outline' 段，不在本方法适用范围内。
-        """
-        name = str(widget.cget("style"))
-        prefix = name.split(".")[0]
-        return prefix if prefix and prefix != widget.winfo_class() else None
+    def _apply_theme_to_legend(self):
+        """图例色块边框色随主题同步（色块填充是语义色，不随主题切换）"""
+        border = THEME_COLORS[get_theme()]["border"]
+        for swatch in getattr(self, "_legend_swatches", []):
+            swatch.setStyleSheet(
+                "background: %s; border: 1px solid %s;"
+                % (swatch.property("cell_color"), border))
 
     # ---------------------------------------------------------- 界面重建
     def _rebuild_ui(self):
         """原地重建整个界面（切换语言用；不重启进程）。
 
-        流程：快照当前可见状态 → 销毁全部子控件与菜单 → 重建 → 恢复。
+        流程：快照当前可见状态 → 停掉碰控件的定时器 → 换新的 central
+        widget（旧的由 setCentralWidget 删除，等效于 ttk 版"销毁全部
+        子控件"）→ 重建 → 恢复。
         跨重建保留的：
           - 各下拉/输入框的当前选择（本地化列表如块大小按
             下标恢复，避免"自动"↔"Auto"对不上）；
@@ -404,65 +623,75 @@ class HDDocApp(ttk.Window):
         # ---- 快照（控件里的值，重建后会丢）----
         state_key = self._state_key    # _build_ui 会把它重置为 ready，先存
         snap = {
-            "target": self.var_target.get(),
-            "bs_idx": self.combo_bs.current(),
-            "engine": self.var_engine.get(),
-            "direct": bool(self.var_direct.get()),
-            "seg_idx": self.combo_seg.current(),
-            "quick": bool(self.var_quick.get()),
-            "sample_idx": self.combo_quick_sample.current(),
-            "map_mode_idx": self.combo_map_mode.current(),
-            "fio": self.var_fio.get(),
-            "tab": self.nb.index("current"),
-            "progress": self.progress["value"],
-            "progress_mode": self.progress.cget("mode"),
+            "target": self.combo_target.currentText(),
+            "bs_idx": self.combo_bs.currentIndex(),
+            "engine": self.combo_engine.currentText(),
+            "direct": self.chk_direct.isChecked(),
+            "seg_idx": self.combo_seg.currentIndex(),
+            "quick": self.chk_quick.isChecked(),
+            "sample_idx": self.combo_quick_sample.currentIndex(),
+            "map_mode_idx": self.combo_map_mode.currentIndex(),
+            "fio": self.entry_fio.currentText(),
+            "tab": self.nb.currentIndex(),
+            "progress": (self.progress.value()
+                         if not self._progress_indeterminate else 0),
+            "progress_indeterminate": self._progress_indeterminate,
             "status": {
-                "lbl_progress": self.lbl_progress.cget("text"),
-                "lbl_speed": self.lbl_speed.cget("text"),
-                "lbl_elapsed": self.lbl_elapsed.cget("text"),
-                "lbl_eta": self.lbl_eta.cget("text"),
-                "lbl_errors": (self.lbl_errors.cget("text"),
-                               self._bootstyle_of(self.lbl_errors)),
+                "lbl_progress": self.lbl_progress.text(),
+                "lbl_speed": self.lbl_speed.text(),
+                "lbl_elapsed": self.lbl_elapsed.text(),
+                "lbl_eta": self.lbl_eta.text(),
+                "lbl_errors": self.lbl_errors.text(),
                 # lbl_state 不进快照：语义键 _state_key 是普通属性，
                 # 重建后直接 _set_state 重放（按新语言）
             },
-            # 热力图：_reset_map 会新建 cells/cell_items，先备份数据
+            # 热力图：_reset_map 会新建 cells，先备份数据
             # （格数固定 MAP_CELLS，重建后按段计划重算段→格映射）
             "map": (list(self.seg_meta), [dict(c) for c in self.cells],
                     self.thresholds) if self.cells else None,
         }
-        # ---- 销毁（子控件 + 旧菜单；窗口本身与 after 回调不动）----
-        for w in self.winfo_children():
-            w.destroy()
-        if getattr(self, "_menubar", None) is not None:
-            try:
-                self._menubar.destroy()
-            except Exception:
-                pass
-        # ---- 重建 ----
-        self._build_ui()
-        self.title(tr("gui.title", ver=VERSION))   # 标题也是 i18n 文案
+        # ---- 停定时器（它们持控件引用；重建后重启轮询）----
+        self._poll_timer.stop()
+        self._pkexec_timer.stop()
+        self._resize_timer.stop()
+        # ---- 销毁 + 重建（setCentralWidget 删除旧 central 及其子控件）----
+        self.menuBar().clear()
+        new_central = QWidget(self)
+        self.setCentralWidget(new_central)
+        self._build_ui(new_central)
+        self.setWindowTitle(tr("gui.title", ver=VERSION))
         self._set_state(state_key)     # 状态行按键重放（按新语言）
         # ---- 恢复 ----
         self._refresh_drives()
-        self.var_target.set(snap["target"])
+        if snap["target"]:
+            idx = self.combo_target.findText(snap["target"])
+            if idx >= 0:
+                self.combo_target.setCurrentIndex(idx)
+            else:
+                # 浏览文件/手动路径不在磁盘列表：加入后选中（快照值不丢）
+                self._set_target_text(snap["target"])
         if snap["bs_idx"] >= 0:
-            self.combo_bs.current(snap["bs_idx"])
-        self.var_engine.set(snap["engine"])
-        self.var_direct.set(snap["direct"])
+            self.combo_bs.setCurrentIndex(snap["bs_idx"])
+        if snap["engine"]:
+            idx = self.combo_engine.findText(snap["engine"])
+            if idx < 0:
+                self.combo_engine.addItem(snap["engine"])
+                idx = self.combo_engine.findText(snap["engine"])
+            self.combo_engine.setCurrentIndex(idx)
+        self.chk_direct.setChecked(snap["direct"])
         if snap["seg_idx"] >= 0:
-            self.combo_seg.current(snap["seg_idx"])
-        self.var_quick.set(snap["quick"])
+            self.combo_seg.setCurrentIndex(snap["seg_idx"])
+        self.chk_quick.setChecked(snap["quick"])
         self._on_quick_toggle()
         if snap["sample_idx"] >= 0:
-            self.combo_quick_sample.current(snap["sample_idx"])
+            self.combo_quick_sample.setCurrentIndex(snap["sample_idx"])
         # 热力图模式：先恢复下标与 self.map_mode（后面的热力图数据重载
-        # _redraw_cells 要按新模式上色），此时不重绘（cell_items 还是旧
-        # 画布的 id，地图块随后会以新 items 正确上色）
+        # _redraw 要按新模式上色），此时不重绘（map_widget 是新的，
+        # 随后地图块数据恢复会正确上色）
         if snap["map_mode_idx"] >= 0:
-            self.combo_map_mode.current(snap["map_mode_idx"])
+            self.combo_map_mode.setCurrentIndex(snap["map_mode_idx"])
         self._on_map_mode_toggle(redraw=False)
-        self.var_fio.set(snap["fio"])
+        self.entry_fio.setCurrentText(snap["fio"])
         self._render_log()
         self._render_banner()
         self._update_admin_ui()
@@ -475,321 +704,317 @@ class HDDocApp(ttk.Window):
             # 即刻恢复，不走逐格队列（否则地图要重新"扫"一遍才填满）
             self._redraw_cells()
         if self.summary is not None:
-            self.progress.stop()
-            self.progress.config(mode="determinate")
-            self.progress["value"] = 100
-            self.btn_export.config(state="normal")
+            self._set_progress_determinate()
+            self.progress.setValue(100)
+            self.btn_export.setEnabled(True)
             self._render_result_ui(self.summary)
         else:
-            self.progress.config(mode=snap["progress_mode"])
-            self.progress["value"] = snap["progress"]
+            if snap["progress_indeterminate"]:
+                self._set_progress_indeterminate()
+            else:
+                self._set_progress_determinate()
+                self.progress.setValue(int(snap["progress"]))
             st = snap["status"]
-            self.lbl_progress.config(text=st["lbl_progress"])
-            self.lbl_speed.config(text=st["lbl_speed"])
-            self.lbl_elapsed.config(text=st["lbl_elapsed"])
-            self.lbl_eta.config(text=st["lbl_eta"])
-            self.lbl_errors.config(text=st["lbl_errors"][0])
-            if st["lbl_errors"][1]:
-                self.lbl_errors.config(bootstyle=st["lbl_errors"][1])
+            self.lbl_progress.setText(st["lbl_progress"])
+            self.lbl_speed.setText(st["lbl_speed"])
+            self.lbl_elapsed.setText(st["lbl_elapsed"])
+            self.lbl_eta.setText(st["lbl_eta"])
+            self.lbl_errors.setText(st["lbl_errors"])
             # 注：lbl_state 已在重建后由 _set_state 按 _state_key 重放
             # （进度/速度等动态值没有语义键可循，按快照原样恢复，
             #  扫描中下一个 tick（≤100ms）即按新语言刷新）
         if scanning:
             # 扫描进行中：恢复按钮禁用态（状态行文案上面已按快照恢复）
-            self.btn_start.config(state="disabled")
-            self.btn_stop.config(state="normal")
-        self.nb.select(snap["tab"])
+            self.btn_start.setEnabled(False)
+            self.btn_stop.setEnabled(True)
+        self.nb.setCurrentIndex(snap["tab"])
+        self._poll_timer.start(25 if len(self.dirty) > 2 else 100)
 
     # ---------------------------------------------------------- UI 构建
-    def _build_ui(self):
-        colors = self.style.colors   # 主题色板：浅/深两套，构建期取一次
+    def _build_ui(self, central=None):
+        central = central if central is not None else self.centralWidget()
+        root = QVBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
         self._build_menubar()
 
-        # ---- 控制区（卡片式 LabelFrame）----
-        outer = self._reg(ttk.LabelFrame(self, padding=(10, 6, 10, 8)),
-                          "gui.settings")
-        outer.pack(fill="x", padx=8, pady=(8, 4))
-        bar = ttk.Frame(outer)
-        bar.pack(fill="x")
+        # ---- 控制区（卡片式 GroupBox，对应 ttk LabelFrame）----
+        outer = QGroupBox(central)
+        outer.setTitle(tr("gui.settings"))
+        root.addWidget(outer)
+        bar = QGridLayout(outer)
+        bar.setContentsMargins(10, 6, 10, 8)
+        bar.setHorizontalSpacing(6)
+        bar.setVerticalSpacing(4)
 
-        self._reg(ttk.Label(bar), "gui.target").grid(row=0, column=0, sticky="w")
-        self.var_target = tk.StringVar()
-        self.combo_target = ttk.Combobox(bar, textvariable=self.var_target, width=52,
-                                       state="readonly")
-        self.combo_target.grid(row=0, column=1, sticky="we", padx=(0, 4))
-        self._reg(ttk.Button(bar, command=self._refresh_drives),
-                  "gui.refresh").grid(row=0, column=2)
-        self._reg(ttk.Button(bar, command=self._browse_file),
-                  "gui.browse_file").grid(row=0, column=3)
+        bar.addWidget(self._reg(QLabel(outer), "gui.target"), 0, 0)
+        self.combo_target = QComboBox(outer)
+        self.combo_target.setSizePolicy(QSizePolicy.Expanding,
+                                        QSizePolicy.Fixed)
+        self.combo_target.setMinimumWidth(360)
+        bar.addWidget(self.combo_target, 0, 1)
 
-        row1 = ttk.Frame(bar)
-        row1.grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        self._reg(ttk.Label(row1), "gui.bs").pack(side="left")
+        # ---- 目标行：下拉 + 刷新 + 浏览文件 ----
+        bar.addWidget(self.combo_target, 0, 1)
+        self.btn_refresh = self._reg(QPushButton(outer), "gui.refresh")
+        self.btn_refresh.clicked.connect(self._refresh_drives)
+        bar.addWidget(self.btn_refresh, 0, 2)
+        self.btn_browse = self._reg(QPushButton(outer), "gui.browse_file")
+        self.btn_browse.clicked.connect(self._browse_file)
+        bar.addWidget(self.btn_browse, 0, 3)
+
+        # ---- 参数行：块大小/引擎/direct/分段/快速扫描/抽样/热力图模式 ----
+        row1 = QHBoxLayout()
+        bar.addLayout(row1, 1, 0, 1, 4)
+        row1.setSpacing(6)
+        row1.addWidget(self._reg(QLabel(outer), "gui.bs"))
         # 默认值取当前语言列表的首项（"自动"/"Auto"），不写死英文
-        self.var_bs = tk.StringVar(value=tr_list("gui.bs_values")[0])
-        self.combo_bs = self._reg_values(
-            ttk.Combobox(row1, textvariable=self.var_bs, width=10,
-                         state="readonly"),
-            "gui.bs_values")
-        self.combo_bs.pack(side="left", padx=(0, 14))
-        self._reg(ttk.Label(row1), "gui.engine").pack(side="left")
-        self.var_engine = tk.StringVar(value="windowsaio" if IS_WIN else "libaio")
-        self.combo_engine = ttk.Combobox(row1, textvariable=self.var_engine,
-                                         width=13, state="readonly",
-                                         values=platform_engines())
-        self.combo_engine.pack(side="left", padx=(0, 14))
-        self.var_direct = tk.BooleanVar(value=True)
-        self._reg(ttk.Checkbutton(row1, variable=self.var_direct),
-                  "gui.direct").pack(side="left")
+        self.combo_bs = self._reg_values(QComboBox(outer), "gui.bs_values")
+        self.combo_bs.setMinimumWidth(90)
+        self.combo_bs.setCurrentIndex(0)
+        row1.addWidget(self.combo_bs)
+        row1.addSpacing(14)
+        row1.addWidget(self._reg(QLabel(outer), "gui.engine"))
+        self.combo_engine = QComboBox(outer)
+        engines = platform_engines()
+        self.combo_engine.addItems(engines)
+        default_engine = "windowsaio" if IS_WIN else "libaio"
+        idx = self.combo_engine.findText(default_engine)
+        if idx < 0:
+            self.combo_engine.addItem(default_engine)
+            idx = self.combo_engine.findText(default_engine)
+        self.combo_engine.setCurrentIndex(max(0, idx))
+        row1.addWidget(self.combo_engine)
+        row1.addSpacing(14)
+        self.chk_direct = self._reg(QCheckBox(outer), "gui.direct")
+        self.chk_direct.setChecked(True)
+        row1.addWidget(self.chk_direct)
         # 分段大小可选（默认 4G）：一段可跨多格，热力图按格索引顺序
         # 逐格点亮（一次只亮一格，见 _flush_cells）
-        self._reg(ttk.Label(row1), "gui.segment").pack(side="left",
-                                                       padx=(14, 0))
-        self.var_seg = tk.StringVar(value="4G")
-        self.combo_seg = self._reg_values(
-            ttk.Combobox(row1, textvariable=self.var_seg, width=22,
-                         state="readonly"),
-            "gui.seg_values")
-        self.combo_seg.pack(side="left")
-        self.var_quick = tk.BooleanVar(value=False)
-        self._reg(ttk.Checkbutton(row1, variable=self.var_quick,
-                                  command=self._on_quick_toggle),
-                  "gui.quick").pack(side="left", padx=(14, 0))
-        self._reg(ttk.Label(row1), "gui.sample").pack(side="left", padx=(6, 0))
-        self.var_quick_sample = tk.StringVar(value="16M")
-        self.combo_quick_sample = ttk.Combobox(
-            row1, textvariable=self.var_quick_sample, width=8, state="readonly",
-            values=tr_list("gui.sample_values"))
-        self.combo_quick_sample.pack(side="left")
-        self.combo_quick_sample.config(state="disabled")
+        row1.addSpacing(14)
+        row1.addWidget(self._reg(QLabel(outer), "gui.segment"))
+        self.combo_seg = self._reg_values(QComboBox(outer), "gui.seg_values")
+        idx = self.combo_seg.findText("4G")
+        self.combo_seg.setCurrentIndex(idx if idx >= 0 else 0)
+        row1.addWidget(self.combo_seg)
+        row1.addSpacing(14)
+        self.chk_quick = self._reg(QCheckBox(outer), "gui.quick")
+        self.chk_quick.stateChanged.connect(self._on_quick_toggle)
+        row1.addWidget(self.chk_quick)
+        row1.addWidget(self._reg(QLabel(outer), "gui.sample"))
+        self.combo_quick_sample = QComboBox(outer)
+        self.combo_quick_sample.addItems(tr_list("gui.sample_values"))
+        idx = self.combo_quick_sample.findText("16M")
+        self.combo_quick_sample.setCurrentIndex(idx if idx >= 0 else 0)
+        self.combo_quick_sample.setEnabled(False)
+        row1.addWidget(self.combo_quick_sample)
         # 热力图模式（健康/读取速度）：显示选项，与扫描参数同行排放
-        self._reg(ttk.Label(row1), "gui.map_mode").pack(side="left",
-                                                        padx=(14, 0))
-        self.var_map_mode = tk.StringVar(value=tr_list("gui.map_mode_values")[0])
-        self.combo_map_mode = self._reg_values(
-            ttk.Combobox(row1, textvariable=self.var_map_mode, width=20,
-                         state="readonly"),
-            "gui.map_mode_values")
-        self.combo_map_mode.pack(side="left")
-        self.combo_map_mode.bind("<<ComboboxSelected>>",
-                                 self._on_map_mode_toggle)
+        row1.addSpacing(14)
+        row1.addWidget(self._reg(QLabel(outer), "gui.map_mode"))
+        self.combo_map_mode = self._reg_values(QComboBox(outer),
+                                               "gui.map_mode_values")
+        self.combo_map_mode.setMinimumWidth(160)
+        self.combo_map_mode.setCurrentIndex(MAP_MODE_HEALTH)
+        self.combo_map_mode.currentIndexChanged.connect(
+            self._on_map_mode_toggle)
+        row1.addWidget(self.combo_map_mode)
+        row1.addStretch(1)
 
-        self._reg(ttk.Label(bar), "gui.fio_path").grid(row=2, column=0,
-                                                       sticky="w", pady=(4, 0))
-        self.var_fio = tk.StringVar(value="fio")
-        ttk.Entry(bar, textvariable=self.var_fio, width=52).grid(
-            row=2, column=1, sticky="w", padx=(0, 4), pady=(4, 0))
-        self._reg(ttk.Button(bar, command=self._browse_fio),
-                  "gui.browse").grid(row=2, column=2, pady=(4, 0))
+        # ---- fio 路径行 ----
+        bar.addWidget(self._reg(QLabel(outer), "gui.fio_path"), 2, 0)
+        self.entry_fio = QComboBox(outer)     # 可编辑：既是输入框又留历史
+        self.entry_fio.setEditable(True)
+        self.entry_fio.setMinimumWidth(360)
+        self.entry_fio.setCurrentText("fio")
+        bar.addWidget(self.entry_fio, 2, 1)
+        self.btn_fio = self._reg(QPushButton(outer), "gui.browse")
+        self.btn_fio.clicked.connect(self._browse_fio)
+        bar.addWidget(self.btn_fio, 2, 2)
 
-        btn_bar = ttk.Frame(bar)
-        btn_bar.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        self.btn_start = self._reg(ttk.Button(btn_bar, bootstyle="primary",
-                                              command=self._start_scan),
-                                   "gui.start")
-        self.btn_start.pack(side="left")
-        self.btn_stop = self._reg(ttk.Button(btn_bar, bootstyle="danger outline",
-                                             command=self._stop_scan,
-                                             state="disabled"),
-                                  "gui.stop")
-        self.btn_stop.pack(side="left", padx=6)
-        self.btn_export = self._reg(ttk.Button(btn_bar, command=self._export_report,
-                                               state="disabled"),
-                                    "gui.export")
-        self.btn_export.pack(side="left")
-        self._reg(ttk.Label(btn_bar, bootstyle="secondary"),
-                  "gui.hint").pack(side="left", padx=12)
-        self.lbl_admin = self._reg(ttk.Label(btn_bar), "gui.perm_checking")
-        self.lbl_admin.pack(side="left", padx=(16, 0))
-        self.btn_elevate = self._reg(ttk.Button(btn_bar,
-                                                command=self._relaunch_elevated),
-                                     "gui.relaunch" if IS_WIN
-                                     else "gui.relaunch_linux")
-        self.btn_elevate.pack(side="left", padx=6)
-        self.btn_elevate.pack_forget()
+        # ---- 按钮行 ----
+        btn_bar = QHBoxLayout()
+        bar.addLayout(btn_bar, 3, 0, 1, 4)
+        btn_bar.setSpacing(6)
+        self.btn_start = self._reg(QPushButton(outer), "gui.start")
+        self.btn_start.setObjectName("btn_start")
+        self.btn_start.clicked.connect(self._start_scan)
+        btn_bar.addWidget(self.btn_start)
+        self.btn_stop = self._reg(QPushButton(outer), "gui.stop")
+        self.btn_stop.setObjectName("btn_stop")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self._stop_scan)
+        btn_bar.addWidget(self.btn_stop)
+        self.btn_export = self._reg(QPushButton(outer), "gui.export")
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self._export_report)
+        btn_bar.addWidget(self.btn_export)
+        lbl_hint = self._reg(QLabel(outer), "gui.hint")
+        lbl_hint.setStyleSheet("color: %s;" % THEME_COLORS[get_theme()]["muted"])
+        self.lbl_hint = lbl_hint
+        btn_bar.addWidget(lbl_hint)
+        btn_bar.addSpacing(16)
+        # 权限状态：初值"检测中"，_startup_admin_check（200ms 后）刷新为
+        # 管理员/标准权限（与 ttk 版 lbl_admin 初值一致）
+        self.lbl_admin = self._reg(QLabel(outer), "gui.perm_checking")
+        btn_bar.addWidget(self.lbl_admin)
+        self.btn_elevate = self._reg(QPushButton(outer), "gui.relaunch")
+        self.btn_elevate.clicked.connect(self._relaunch_elevated)
+        self.btn_elevate.setVisible(False)
+        btn_bar.addWidget(self.btn_elevate)
+        btn_bar.addStretch(1)
 
-        bar.columnconfigure(1, weight=1)
+        bar.setColumnStretch(1, 1)
 
         # ---- 热力图 ----
         # 标题文案随模式切换（_update_map_title），不占 _reg 的静态键
-        self.map_frame = ttk.LabelFrame(self, padding=(8, 6, 8, 6))
+        self.map_frame = QGroupBox(central)
         self._update_map_title()
-        self.map_frame.pack(fill="both", expand=True, padx=8, pady=4)
-        self.canvas_map = tk.Canvas(self.map_frame, bg=colors.bg,
-                                    highlightthickness=0)
-        self.canvas_map.pack(fill="both", expand=True, padx=4, pady=4)
-        self.canvas_map.bind("<Motion>", self._on_canvas_motion)
-        self.canvas_map.bind("<Leave>", lambda e: self.lbl_hover.config(text=""))
-        # 窗口缩放/DPI 变化：格子按新画布尺寸重排（只挪坐标，不动数据）
-        self.canvas_map.bind("<Configure>", self._on_canvas_configure)
+        root.addWidget(self.map_frame, 1)
+        map_lay = QVBoxLayout(self.map_frame)
+        map_lay.setContentsMargins(6, 4, 6, 4)
+        self.map_widget = MapWidget(self)
+        map_lay.addWidget(self.map_widget, 1)
 
-        legend = ttk.Frame(self.map_frame)
-        legend.pack(fill="x", padx=4)
-        self.lbl_hover = ttk.Label(legend, text="", anchor="w",
-                                   bootstyle="secondary")
-        self.lbl_hover.pack(side="left", fill="x", expand=True)
+        legend = QWidget(central)
+        legend_lay = QHBoxLayout(legend)
+        legend_lay.setContentsMargins(4, 0, 4, 0)
+        legend_lay.setSpacing(4)
+        self.lbl_hover = QLabel(legend)
+        self.lbl_hover.setStyleSheet(
+            "color: %s;" % THEME_COLORS[get_theme()]["muted"])
+        legend_lay.addWidget(self.lbl_hover, 1)
         self._legend_labels = []
-        self._legend_swatches = []   # 原生 tk 色块：切主题时手工同步边框色
+        self._legend_swatches = []   # 色块标签：切主题时同步边框色
         # 四个语义色全部建好，按模式显隐（_layout_legend）：健康模式只留
         # 绿/红/灰，速度模式 绿/黄/红/灰
         for color, key in ((COLOR_OK, "ok"), (COLOR_SLOW, "slow"),
                            (COLOR_ERROR, "error"),
                            (COLOR_PENDING, "pending")):
-            swatch = tk.Frame(legend, bg=color, width=12, height=12,
-                              highlightbackground=colors.border,
-                              highlightthickness=1)
+            swatch = QLabel(legend)
+            swatch.setProperty("cell_color", color)
+            swatch.setFixedSize(12, 12)
+            legend_lay.addWidget(swatch)
             self._legend_swatches.append(swatch)
-            lbl = ttk.Label(legend, text=status_text(key),
-                            bootstyle="secondary")
+            lbl = QLabel(legend, text=status_text(key))
+            lbl.setStyleSheet(
+                "color: %s;" % THEME_COLORS[get_theme()]["muted"])
+            legend_lay.addWidget(lbl)
             self._legend_labels.append((lbl, key))
+        self._apply_theme_to_legend()
         self._layout_legend()
 
         # ---- 状态行 ----
-        st = ttk.Frame(self)
-        st.pack(fill="x", padx=8, pady=4)
-        self.progress = ttk.Progressbar(st, maximum=100, bootstyle="primary")
-        self.progress.pack(fill="x", side="top", pady=(0, 6))
+        st = QWidget(central)
+        root.addWidget(st)
+        st_lay = QVBoxLayout(st)
+        st_lay.setContentsMargins(8, 4, 8, 4)
+        st_lay.setSpacing(4)
+        self.progress = QProgressBar(st)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        st_lay.addWidget(self.progress)
         # 结果横幅：替代此前的 messagebox，扫描结果/错误在界面内展示
-        # （bootstyle 随级别动态切换：info/success/warning/danger）
-        self.lbl_banner = ttk.Label(st, text="", anchor="w", bootstyle="info",
-                                    font=("Segoe UI", 9, "bold"),
-                                    padding=(10, 6))
-        self.lbl_banner.pack(fill="x", pady=(0, 6))
-        row = ttk.Frame(st, padding=(10, 6))
-        row.pack(fill="x")
-        self.lbl_progress = self._reg(ttk.Label(row, width=16), "gui.progress")
-        self.lbl_progress.pack(side="left")
-        self.lbl_speed = self._reg(ttk.Label(row, width=18), "gui.speed")
-        self.lbl_speed.pack(side="left")
-        self.lbl_elapsed = self._reg(ttk.Label(row, width=14), "gui.elapsed")
-        self.lbl_elapsed.pack(side="left")
-        self.lbl_eta = self._reg(ttk.Label(row, width=14), "gui.eta")
-        self.lbl_eta.pack(side="left")
-        self.lbl_errors = self._reg(ttk.Label(row, width=12), "gui.errors")
-        self.lbl_errors.pack(side="left")
-        self.lbl_state = ttk.Label(row)
-        self.lbl_state.pack(side="left", padx=10)
+        # （背景色随级别动态切换：info/success/warning/danger）
+        self.lbl_banner = QLabel(st, text="")
+        self.lbl_banner.setWordWrap(True)
+        self.lbl_banner.setStyleSheet(
+            "background: %s; color: %s; border-radius: 3px; padding: 6px 10px;"
+            % BANNER_STYLE["info"])
+        st_lay.addWidget(self.lbl_banner)
+        row = QWidget(st)
+        st_lay.addWidget(row)
+        row_lay = QHBoxLayout(row)
+        row_lay.setContentsMargins(0, 0, 0, 0)
+        row_lay.setSpacing(10)
+        self.lbl_progress = self._reg(QLabel(row), "gui.progress")
+        row_lay.addWidget(self.lbl_progress)
+        self.lbl_speed = self._reg(QLabel(row), "gui.speed")
+        row_lay.addWidget(self.lbl_speed)
+        self.lbl_elapsed = self._reg(QLabel(row), "gui.elapsed")
+        row_lay.addWidget(self.lbl_elapsed)
+        self.lbl_eta = self._reg(QLabel(row), "gui.eta")
+        row_lay.addWidget(self.lbl_eta)
+        self.lbl_errors = self._reg(QLabel(row), "gui.errors")
+        row_lay.addWidget(self.lbl_errors)
+        self.lbl_state = QLabel(row)
+        row_lay.addWidget(self.lbl_state)
+        row_lay.addStretch(1)
         self._set_state("gui.state_ready")
 
         # ---- 详情页 ----
-        self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=False, padx=8, pady=(4, 8))
-        self.txt_log = ttk.ScrolledText(self.nb, height=9,
-                                        font=("Consolas", 9), wrap="word")
+        self.nb = QTabWidget(central)
+        root.addWidget(self.nb, 2)
+        self.txt_log = QPlainTextEdit(self.nb)
+        self.txt_log.setFont(_mono_font())
+        self.txt_log.setReadOnly(True)
+        self.txt_log.setMaximumBlockCount(600)
+        self.txt_log.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self._reg_tab(self.nb, self.txt_log, "gui.tab_log")
-        err_frame = ttk.Frame(self.nb)
-        self._reg_tab(self.nb, err_frame, "gui.tab_errors")
+        err_frame = QWidget(self.nb)
+        err_lay = QHBoxLayout(err_frame)
+        err_lay.setContentsMargins(0, 0, 0, 0)
         cols = ("block", "offset", "desc")
-        self.tree_err = ttk.Treeview(err_frame, columns=cols, show="headings",
-                                     height=7)
+        self.tree_err = QTreeWidget(err_frame)
+        self.tree_err.setHeaderLabels(["", "", ""])
+        self.tree_err.setRootIsDecorated(False)
+        self.tree_err.setUniformRowHeights(True)
         for c, w, key in zip(cols, (90, 160, 420),
-                             ("gui.col_block", "gui.col_offset", "gui.col_desc")):
-            self._reg_heading(self.tree_err, c, key)
-            self.tree_err.column(c, width=w, anchor="w")
-        self.tree_err.pack(fill="both", expand=True, side="left")
-        sb = ttk.Scrollbar(err_frame, command=self.tree_err.yview)
-        sb.pack(side="right", fill="y")
-        self.tree_err.configure(yscrollcommand=sb.set)
-        self.txt_summary = ttk.ScrolledText(self.nb, height=9,
-                                            font=("Consolas", 9), wrap="word")
+                             ("gui.col_block", "gui.col_offset",
+                              "gui.col_desc")):
+            self._reg_heading(self.tree_err, cols.index(c), key)
+            self.tree_err.setColumnWidth(cols.index(c), w)
+        err_lay.addWidget(self.tree_err)
+        self._reg_tab(self.nb, err_frame, "gui.tab_errors")
+        self.txt_summary = QPlainTextEdit(self.nb)
+        self.txt_summary.setFont(_mono_font())
+        self.txt_summary.setReadOnly(True)
+        self.txt_summary.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self._reg_tab(self.nb, self.txt_summary, "gui.tab_summary")
 
+        # 图例放进地图卡片底部（与 ttk 版一致：hover 提示 + 色块横条）
+        map_lay.addWidget(legend, 0)
+
     def _build_menubar(self):
-        menubar = tk.Menu(self)
-        lang_menu = tk.Menu(menubar, tearoff=0)
+        mb = self.menuBar()
         # 语言菜单由 lang/*.json 自动发现生成（core.available_languages：
         # 文件名即语言码、_meta.name 即菜单标签）。新增语言只需往 lang/
         # 放一个 JSON，不用改这里；切换后 _rebuild_ui 会用新表重建菜单。
+        lang_menu = mb.addMenu(tr("gui.menu.language"))
+        self._lang_actions = []
         for code, name in available_languages():
-            lang_menu.add_radiobutton(
-                label=name, variable=self.var_lang, value=code,
-                command=lambda c=code: self._set_language(c))
-        menubar.add_cascade(label=tr("gui.menu.language"), menu=lang_menu)
-        view_menu = tk.Menu(menubar, tearoff=0)
-        view_menu.add_radiobutton(label=tr("gui.menu.theme_light"),
-                                  variable=self.var_theme,
-                                  value="bootstrap-light",
-                                  command=lambda: self._set_theme("bootstrap-light"))
-        view_menu.add_radiobutton(label=tr("gui.menu.theme_dark"),
-                                  variable=self.var_theme,
-                                  value="bootstrap-dark",
-                                  command=lambda: self._set_theme("bootstrap-dark"))
-        menubar.add_cascade(label=tr("gui.menu.view"), menu=view_menu)
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label=tr("gui.menu.about"), command=self._show_about)
-        menubar.add_cascade(label=tr("gui.menu.help"), menu=help_menu)
-        self.config(menu=menubar)
-        self._menubar = menubar
-        self._lang_menu = lang_menu
-        self._view_menu = view_menu
-        self._help_menu = help_menu
+            act = lang_menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(code == get_language())
+            act.triggered.connect(
+                lambda checked=False, c=code: self._set_language(c))
+            self._lang_actions.append((act, code))
+        view_menu = mb.addMenu(tr("gui.menu.view"))
+        self._theme_actions = []
+        for label_key, value in (("gui.menu.theme_light", "bootstrap-light"),
+                                 ("gui.menu.theme_dark", "bootstrap-dark")):
+            act = view_menu.addAction(tr(label_key))
+            act.setCheckable(True)
+            act.setChecked(value == get_theme())
+            act.triggered.connect(
+                lambda checked=False, v=value: self._set_theme(v))
+            self._theme_actions.append((act, value))
+        help_menu = mb.addMenu(tr("gui.menu.help"))
+        act = help_menu.addAction(tr("gui.menu.about"))
+        act.triggered.connect(self._show_about)
 
     # ---------------------------------------------------------- 关于窗口
     def _show_about(self):
-        # ttkbootstrap.Toplevel 的第一个位置参数是 title 而非 master，
-        # 必须用关键字传 master；iconphoto='' 默认继承主窗口图标
-        win = ttk.Toplevel(master=self)
-        win.title(tr("gui.about.title"))
-        win.transient(self)
-        win.resizable(False, False)
-        # 标题栏图标必须走 iconphoto：Tk 的 Windows 端口渲染不了 PNG 压缩的
-        # .ico（iconbitmap 静默无效果 → 标题栏图标空白；主窗口同样因此改用
-        # iconphoto 设置标题栏/任务栏图标）。用 48px 缩放版即可，Windows 会
-        # 按标题栏尺寸自行缩放；两条路都失败才回退 iconbitmap。
-        try:
-            win.iconphoto(False, self._about_icon or self._icon_img)
-        except Exception:
-            try:
-                win.iconbitmap(os.path.join(_resource_dir(), "HD_Doc.ico"))
-            except Exception:
-                pass
-        frm = ttk.Frame(win, padding=24)
-        frm.pack(fill="both", expand=True)
-        head = ttk.Frame(frm)
-        head.pack(fill="x")
-        if self._about_icon is not None:
-            ttk.Label(head, image=self._about_icon).pack(side="left",
-                                                        padx=(0, 10))
-        ttk.Label(head, text=tr("gui.title", ver=VERSION),
-                  font=("Segoe UI", 12, "bold")).pack(side="left")
-        ttk.Label(frm, text=tr("gui.about.body"), wraplength=420,
-                  justify="center", padding=(0, 12)).pack()
-        btn = ttk.Button(frm, text=tr("gui.about.ok"),
-                         command=lambda: self._close_about(win),
-                         bootstyle="primary")
-        btn.pack(pady=(8, 0))
-        win.bind("<Escape>", lambda e: self._close_about(win))
-        win.protocol("WM_DELETE_WINDOW", lambda: self._close_about(win))
-        # 模态 + 居中于父窗口
-        win.grab_set()
-        self.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() - win.winfo_reqwidth()) // 2
-        y = self.winfo_y() + (self.winfo_height() - win.winfo_reqheight()) // 2
-        win.geometry("+%d+%d" % (max(0, x), max(0, y)))
-        # grab_set 只拦截输入，不保证窗口置前/获焦（Windows 上弹窗常留在
-        # 父窗口后面）：先 lift + 强抢窗口焦点使其激活，再把键盘焦点交给
-        # "确定"按钮（聚焦后回车/空格即关闭）。取焦失败不影响功能，静默继续。
-        win.lift()
-        try:
-            win.focus_force()
-            btn.focus_set()
-        except Exception:
-            pass
-
-    def _close_about(self, win):
-        """关闭关于窗口并把焦点/置前状态还给主窗口（模态对话框的基本礼仪）"""
-        win.destroy()
-        try:
-            self.lift()
-            self.focus_force()
-        except Exception:
-            pass
+        win = AboutDialog(self)
+        win.exec_()
+        # 关闭后把焦点还给主窗口（模态对话框的基本礼仪）
+        self.raise_()
+        self.activateWindow()
 
     def _on_tk_exception(self, exc_type, exc_value, exc_tb):
-        """Tk 回调未捕获异常 → 运行日志（默认行为是打印到 stderr，
-        打包版无控制台用户不可见；这里连同堆栈落盘便于排查）"""
-        core.log_exception("tk callback exception", exc_value)
+        """兼容旧名的异常入口（实际由 sys.excepthook 全局捕获）"""
+        _qt_excepthook(exc_type, exc_value, exc_tb)
 
     # ---------------------------------------------------------- 交互
     def _refresh_drives(self):
@@ -820,30 +1045,45 @@ class HDDocApp(ttk.Window):
                 seen[label] = 1
             self._target_paths[label] = d["path"]
             values.append(label)
-        self.combo_target["values"] = values
-        if values and not self.var_target.get():
-            self.var_target.set(values[0])
+        self.combo_target.clear()
+        self.combo_target.addItems(values)
+        if values and not self.combo_target.currentText():
+            self.combo_target.setCurrentIndex(0)
+
+    def _set_target_text(self, text):
+        """把任意文本设为目标下拉的当前值。
+
+        下拉保持只读（防误输入），但 _browse_file 选中的文件路径 /
+        测试注入的镜像路径可能不在磁盘列表里——与 ttk 版 textvariable
+        可显示任意文本的行为对应：路径不在列表时先加入再选中。
+        _start_scan 解析时先查 _target_paths 映射，查不到按普通文件
+        路径规范化（见 _start_scan 首行）。
+        """
+        idx = self.combo_target.findText(text)
+        if idx < 0:
+            self.combo_target.addItem(text)
+            idx = self.combo_target.count() - 1
+        self.combo_target.setCurrentIndex(idx)
 
     def _browse_file(self):
-        p = filedialog.askopenfilename(title=tr("gui.browse_file"))
+        p, _ = QFileDialog.getOpenFileName(self, tr("gui.browse_file"))
         if p:
-            self.var_target.set(p)
+            self._set_target_text(p)
 
     def _browse_fio(self):
-        p = filedialog.askopenfilename(title=tr("gui.fio_path"),
-                                       filetypes=[("fio", "fio"),
-                                                  ("All", "*.*")])
+        p, _ = QFileDialog.getOpenFileName(
+            self, tr("gui.fio_path"), "",
+            "fio (fio);;%s (*)" % tr("gui.browse"))
         if p:
-            self.var_fio.set(p)
+            self.entry_fio.setCurrentText(p)
 
     def _on_quick_toggle(self):
         # 仅在勾选快速扫描时允许选抽样大小
-        self.combo_quick_sample.config(
-            state="readonly" if self.var_quick.get() else "disabled")
+        self.combo_quick_sample.setEnabled(self.chk_quick.isChecked())
 
     # ---------------------------------------------------------- 横幅/日志
     def _banner(self, key, level="info", **kw):
-        """界面内结果横幅（替代弹窗）；级别 → ttkbootstrap bootstyle。
+        """界面内结果横幅（替代弹窗）；级别 → (bg, fg) 语义色。
         键与参数记入 _banner_key：切换语言重建界面时按新语言重放。"""
         self._banner_key = (key, level, kw)
         self._render_banner()
@@ -853,8 +1093,11 @@ class HDDocApp(ttk.Window):
         if self._banner_key is None:
             return
         key, level, kw = self._banner_key
-        self.lbl_banner.config(text=tr(key, **kw),
-                               bootstyle=BANNER_BOOTSTYLE.get(level, "info"))
+        bg, fg = BANNER_STYLE.get(level, BANNER_STYLE["info"])
+        self.lbl_banner.setText(tr(key, **kw))
+        self.lbl_banner.setStyleSheet(
+            "background: %s; color: %s; border-radius: 3px; padding: 6px 10px;"
+            % (bg, fg))
 
     def _log(self, stream, key, **kw):
         """写入一条可翻译日志（结构化记录；切换语言后随界面重建，
@@ -872,38 +1115,43 @@ class HDDocApp(ttk.Window):
         self._log_line(stream, line)
 
     def _log_line(self, stream, line):
-        # ScrolledText 的文本方法委托给内部 Text（见 ttkbootstrap 文档）
-        self.txt_log.insert("end", "[%s] %s\n" % (stream, line))
-        if int(self.txt_log.index("end-1c").split(".")[0]) > 600:
-            self.txt_log.delete("1.0", "200.0")
+        self.txt_log.appendPlainText("[%s] %s" % (stream, line))
         # 扫描过程中日志持续追加：固定滚动到最后一行
-        self.txt_log.see("end")
+        # （与 ttk 版 see("end") 对应；Qt 里 appendPlainText 不自动滚动）
+        bar = self.txt_log.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _render_log(self):
         """按当前语言重放全部日志（界面重建后调用）"""
-        self.txt_log.delete("1.0", "end")
+        self.txt_log.clear()
         for entry in self._log_entries:
             if entry[0] == "raw":
                 _kind, stream, line = entry
             else:
                 _kind, stream, key, kw = entry
                 line = tr(key, **kw)
-            self.txt_log.insert("end", "[%s] %s\n" % (stream, line))
-        self.txt_log.see("end")
+            self.txt_log.appendPlainText("[%s] %s" % (stream, line))
+        bar = self.txt_log.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     # ---------------------------------------------------------- 管理员权限
     def _update_admin_ui(self):
         if is_admin():
-            self.lbl_admin.config(text=tr("gui.perm_admin"),
-                                  bootstyle="success")
-            self.btn_elevate.pack_forget()
+            self.lbl_admin.setText(tr("gui.perm_admin"))
+            self.lbl_admin.setStyleSheet(
+                "background: %s; color: %s; border-radius: 3px; padding: 2px 8px;"
+                % BANNER_STYLE["ok"])
+            self.btn_elevate.setVisible(False)
         else:
-            self.lbl_admin.config(text=tr("gui.perm_standard"),
-                                  bootstyle="warning")
-            self.btn_elevate.pack(side="left", padx=6)
+            self.lbl_admin.setText(tr("gui.perm_standard"))
+            self.lbl_admin.setStyleSheet(
+                "background: %s; color: %s; border-radius: 3px; padding: 2px 8px;"
+                % BANNER_STYLE["warn"])
+            self.btn_elevate.setVisible(True)
+            self.btn_elevate.setText(
+                tr("gui.relaunch" if IS_WIN else "gui.relaunch_linux"))
 
     def _startup_admin_check(self):
-        self._admin_checked = True
         self._update_admin_ui()
         if is_admin():
             self._log("info", "gui.log.admin_ok")
@@ -936,7 +1184,7 @@ class HDDocApp(ttk.Window):
             self._log("warn", "gui.log.no_pythonw")
         self._log("info", "gui.log.elevate_requested")
         core.log_event("elevate: requesting administrator relaunch (gui=True)")
-        self.after(200, self._exit_now)
+        QTimer.singleShot(200, self._exit_now)
 
     def _relaunch_elevated_linux(self):
         """Linux pkexec 提权：发起 → 横幅告知等待授权 → 轮询子进程。
@@ -959,29 +1207,31 @@ class HDDocApp(ttk.Window):
         self._banner("gui.msg.elevate_waiting", "info")
         self._log("info", "gui.log.elevate_requested")
         core.log_event("elevate: pkexec requested (pid=%s)" % popen.pid)
-        self._pkexec_after = self.after(150, self._poll_pkexec)
+        self._pkexec_timer.start()
 
     def _poll_pkexec(self):
         popen = self._pkexec_popen
         if popen is None:
+            self._pkexec_timer.stop()
             return
         try:
             if popen.poll() is None:
                 self._pkexec_polls -= 1
-                if self._pkexec_polls > 0:
-                    self._pkexec_after = self.after(150, self._poll_pkexec)
-                else:
+                if self._pkexec_polls <= 0:
                     # 3 秒仍存活：授权进行中或提权实例已启动，退出本窗口，
                     # 避免两个实例并存（授权框关掉后新窗口会出现）
                     self._pkexec_popen = None
+                    self._pkexec_timer.stop()
                     self._log("info", "gui.log.elevate_handover")
                     self._exit_now()
                 return
         except Exception:
             # 窗口已销毁等：放弃轮询
             self._pkexec_popen = None
+            self._pkexec_timer.stop()
             return
         # pkexec 已退出 = 授权被取消/失败：保留窗口并说明原因
+        self._pkexec_timer.stop()
         code = popen.returncode
         self._pkexec_popen = None
         key = ("gui.msg.elevate_cancelled" if code
@@ -998,26 +1248,23 @@ class HDDocApp(ttk.Window):
                 self.scanner.stop()
         except Exception:
             pass
-        self.destroy()
+        self.close()
+        QApplication.instance().quit()
 
     def _cancel_timers(self):
-        """取消挂起的 after 回调，避免销毁后 Tcl 报
-        “invalid command name …”（提权重启/关闭路径的退出噪声）"""
-        for attr in ("_poll_after", "_admin_after", "_pkexec_after",
-                     "_map_cfg_after"):
+        """停掉全部挂起的定时器，避免销毁后回调打到已删除的控件
+        （提权重启/关闭路径的退出噪声）"""
+        for t in (self._poll_timer, self._pkexec_timer, self._resize_timer):
             try:
-                after_id = getattr(self, attr, None)
-                if after_id:
-                    self.after_cancel(after_id)
-                    setattr(self, attr, None)
+                t.stop()
             except Exception:
                 pass
 
     # ---------------------------------------------------------- 扫描控制
     def _start_scan(self):
         # 下拉标签（型号+容量）→ 设备路径；手动输入的路径走规范化
-        target = (self._target_paths.get(self.var_target.get())
-                  or normalize_target_path(self.var_target.get()))
+        target = (self._target_paths.get(self.combo_target.currentText())
+                  or normalize_target_path(self.combo_target.currentText()))
         if not target:
             self._banner("gui.msg.no_target", "warn")
             self._log("warn", "gui.msg.no_target")
@@ -1035,12 +1282,12 @@ class HDDocApp(ttk.Window):
                 self._log("warn", "gui.msg.admin_needed" if IS_WIN
                           else "gui.msg.admin_needed_linux", t=target)
             return
-        fio = resolve_fio(self.var_fio.get().strip())
+        fio = resolve_fio(self.entry_fio.currentText().strip())
         if not os.path.isfile(fio):
             # 不弹窗：日志 + 横幅提示后继续（用户可能稍后补齐路径）
             self._log("warn", "gui.log.fio_missing", f=fio)
             self._banner("gui.log.fio_missing", "warn", f=fio)
-        engine = (self.var_engine.get() or "").strip()
+        engine = (self.combo_engine.currentText() or "").strip()
         engines = list_fio_engines(fio)
         if engines is not None and engine and engine not in engines:
             # 引擎不可用是确定性错误：界面内展示，不弹窗
@@ -1059,7 +1306,7 @@ class HDDocApp(ttk.Window):
         size = query_target_size(target)
         self.total_size = size
         try:
-            bs = parse_bs(self.var_bs.get(), size)
+            bs = parse_bs(self.combo_bs.currentText(), size)
         except ValueError as e:
             self._banner("gui.msg.param_error_title", "error")
             self._log_raw("error", "%s: %s" % (tr("gui.msg.param_error_title"), e))
@@ -1067,14 +1314,14 @@ class HDDocApp(ttk.Window):
         if size and bs > size:
             bs = clamp_bs(bs, size)
             self._log("warn", "gui.log.bs_clamped", sz=fmt_bytes(bs))
-        quick = bool(self.var_quick.get())
+        quick = self.chk_quick.isChecked()
         # 分段大小可选（默认 4G）："整盘一次"（parse 返回 None）→ 单段
         # 整盘；容量未知时同样降级整盘一次（横幅提示，不弹窗）。
         # 快速扫描与全段扫描共用同一套分段设置：按分段大小把磁盘切成
         # 若干区域，每区只读开头样本（用户反馈"取消固定 256 段，按照
         # 分段设置分段"——旧版快速扫描固定按格数布 256 区，与分段下拉
         # 脱节）；分段超过容量时合成单区（只读区头样本）。
-        seg_bytes = parse_segment_size(self.var_seg.get())
+        seg_bytes = parse_segment_size(self.combo_seg.currentText())
         if not size and seg_bytes is not None:
             # 不弹窗：降级模式说明进日志与横幅，直接继续
             self._log("warn", "gui.log.no_size_degraded", t=target)
@@ -1084,7 +1331,7 @@ class HDDocApp(ttk.Window):
             if size:
                 bs, segments, quick_sample = quick_scan_setup(
                     size, bs, seg_bytes,
-                    parse_bs(self.var_quick_sample.get()))
+                    parse_bs(self.combo_quick_sample.currentText()))
                 if (seg_bytes and len(segments) > 1
                         and segments[1][0] - segments[0][0] > seg_bytes):
                     # 段数超硬上限被翻倍兜底：告知用户实际区域跨度，
@@ -1126,12 +1373,15 @@ class HDDocApp(ttk.Window):
         self._err_seen = set()      # 新一轮扫描：错误块去重集清零
         if not size:
             self._log("warn", "gui.log.no_size_map")
-        self.tree_err.delete(*self.tree_err.get_children())
-        self.txt_summary.delete("1.0", "end")
+        self.tree_err.clear()
+        self.txt_summary.clear()
         self.summary = None
-        self.btn_export.config(state="disabled")
+        self.btn_export.setEnabled(False)
         self._banner_key = None      # 清横幅（重放时不再显示上一轮结果）
-        self.lbl_banner.config(text="", bootstyle="info")
+        self.lbl_banner.setText("")
+        self.lbl_banner.setStyleSheet(
+            "background: %s; color: %s; border-radius: 3px; padding: 6px 10px;"
+            % BANNER_STYLE["info"])
         self.scan_start_ts = time.time()
         self.scan_bs = bs
         self.scan_quick = quick
@@ -1147,18 +1397,17 @@ class HDDocApp(ttk.Window):
         self._update_status(0, None, None, 0)
 
         self.scanner = FioScanner(fio)
-        # UI 变量只能在主线程读：工作线程里访问 Tk 变量会抛
-        # "main thread is not in main loop"（tkinter 解释器非线程安全），
-        # 故 engine/direct 在此读出后当参数传进 worker
-        engine_val = (self.var_engine.get() or "").strip() or None
-        direct_val = bool(self.var_direct.get())
+        # UI 变量只能在主线程读：工作线程里访问 Qt 控件会炸（Qt 非线程
+        # 安全），故 engine/direct 在此读出后当参数传进 worker
+        engine_val = (self.combo_engine.currentText() or "").strip() or None
+        direct_val = self.chk_direct.isChecked()
         self.worker = threading.Thread(
             target=self._run_worker,
             args=(target, bs, segments, size, quick,
                   engine_val, direct_val), daemon=True)
         self.worker.start()
-        self.btn_start.config(state="disabled")
-        self.btn_stop.config(state="normal")
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
         self._set_state("gui.state_scanning")
         self._log("info", "gui.log.start_scan",
                   t=target, bs=fmt_bytes(bs), n=len(segments),
@@ -1196,7 +1445,20 @@ class HDDocApp(ttk.Window):
             self._log("warn", "gui.log.stop_requested")
             core.log_event("scan: stop requested by user")
 
+    def closeEvent(self, ev):
+        if self.scanner and self.worker and self.worker.is_alive():
+            if not self._ask_yes(tr("gui.msg.exit_title"),
+                                 tr("gui.msg.exit_scanning")):
+                ev.ignore()
+                return
+            self.scanner.stop()
+            core.log_event("scan: stopped because the app window is closing")
+        self._cancel_timers()
+        core.log_event("gui: exit")
+        ev.accept()
+
     def _on_close(self):
+        """兼容旧名的关闭入口（closeEvent 调用同名逻辑）"""
         if self.scanner and self.worker and self.worker.is_alive():
             if not self._ask_yes(tr("gui.msg.exit_title"),
                                  tr("gui.msg.exit_scanning")):
@@ -1205,7 +1467,7 @@ class HDDocApp(ttk.Window):
             core.log_event("scan: stopped because the app window is closing")
         self._cancel_timers()
         core.log_event("gui: exit")
-        self.destroy()
+        self.close()
 
     def _on_parent_died(self):
         """父进程（onefile bootloader）被外部杀死时的退出路径。
@@ -1239,15 +1501,13 @@ class HDDocApp(ttk.Window):
         快速扫描按区域跨度点亮（seg_meta 第三元素）：区头 16MB 抽样的
         结果覆盖整个区域，否则未抽样格会永久灰色（见下方 seg_cells）。
         """
-        self.canvas_map.delete("all")
-        self.canvas_map.update_idletasks()
-        w = max(100, self.canvas_map.winfo_width())
-        h = max(100, self.canvas_map.winfo_height())
-        total = total_size if total_size else self.total_size
         self.seg_meta = list(seg_meta) if seg_meta else []
         self.n_cells = MAP_CELLS
+        w = max(100, self.map_widget.width())
+        h = max(100, self.map_widget.height())
+        total = total_size if total_size else self.total_size
         pitch, cols, rows, ox, oy = plan_grid(w, h, self.n_cells)
-        self._map_wh = (w, h)       # 记录本次布局的画布尺寸（<Configure> 去重）
+        self._map_wh = (w, h)       # 记录本次布局的画布尺寸（resizeEvent 去重）
         self.cell_pitch = pitch
         self.grid_cols = cols
         self.grid_rows = rows
@@ -1255,15 +1515,8 @@ class HDDocApp(ttk.Window):
         self.grid_oy = oy
         cell = max(CELL_SIZE_MIN, int(pitch) - CELL_GAP)
         self.cells = []
-        self.cell_items = []
         self.cell_span = []
         for i in range(self.n_cells):
-            r, c = divmod(i, cols)   # 行优先：铺满一行再下一行
-            x = ox + c * pitch
-            y = oy + r * pitch
-            self.cell_items.append(self.canvas_map.create_rectangle(
-                x, y, x + cell, y + cell,
-                fill=COLOR_PENDING, outline=""))
             self.cells.append({"median": None, "max": None, "n": 0,
                                "errors": 0, "parts": []})
             a = total * i // self.n_cells if total else None
@@ -1287,36 +1540,28 @@ class HDDocApp(ttk.Window):
                 if self.cell_region[c] is None:
                     self.cell_region[c] = i
         self.dirty.clear()
+        self._painted = [None] * self.n_cells
+        self.map_widget.update()
 
-    def _on_canvas_configure(self, ev=None):
-        """画布尺寸变化（窗口缩放/最大化/DPI 变化/语言重建后重映射）：
-        拖拽缩放会连续触发 Configure，用 50ms 防抖合并成一次重排。"""
-        if self._map_cfg_after is not None:
-            return                  # 已挂起：等它跑（顺带覆盖最新尺寸）
-        self._map_cfg_after = self.after(50, self._flush_canvas_configure)
+    def _on_map_resize(self):
+        """地图部件尺寸变化（窗口缩放/最大化/DPI 变化/语言重建后重映射）：
+        拖拽缩放会连续触发，用 50ms 防抖合并成一次重排。"""
+        self._resize_timer.start()
 
-    def _flush_canvas_configure(self):
-        self._map_cfg_after = None
-        # 窗口已销毁（提权重启/关闭路径）时安静退出，避免 Tcl 报
-        # “invalid command name”（与 _poll_queue 同款防御）
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
-            return
+    def _flush_map_configure(self):
         self._relayout_map()
 
     def _relayout_map(self):
-        """按当前画布尺寸重排热力图格子（窗口缩放自适应）。
+        """按当前地图部件尺寸重排热力图格子（窗口缩放自适应）。
 
-        只更新格子矩形的坐标与网格参数（cell_pitch/grid_cols/grid_rows/
-        grid_ox/grid_oy），格子的统计数据、颜色、错误数全部不动——缩放
-        是纯几何变化。无格子（未扫描）或尺寸没变时直接返回。
+        只更新网格参数（cell_pitch/grid_cols/grid_rows/grid_ox/grid_oy），
+        格子的统计数据、颜色、错误数全部不动——缩放是纯几何变化。
+        无格子（未扫描）或尺寸没变时直接返回。
         """
-        if not self.cell_items:
+        if not self.cells:
             return
-        w = max(100, self.canvas_map.winfo_width())
-        h = max(100, self.canvas_map.winfo_height())
+        w = max(100, self.map_widget.width())
+        h = max(100, self.map_widget.height())
         if self._map_wh == (w, h):
             return
         self._map_wh = (w, h)
@@ -1326,18 +1571,13 @@ class HDDocApp(ttk.Window):
         self.grid_rows = rows
         self.grid_ox = ox
         self.grid_oy = oy
-        cell = max(CELL_SIZE_MIN, int(pitch) - CELL_GAP)
-        for i, item in enumerate(self.cell_items):
-            r, c = divmod(i, cols)   # 行优先：与 _reset_map 一致
-            x = ox + c * pitch
-            y = oy + r * pitch
-            self.canvas_map.coords(item, x, y, x + cell, y + cell)
+        self.map_widget.update()
 
     def _update_map_title(self):
-        """热力图标题随模式切换（LabelFrame 文本）"""
+        """热力图标题随模式切换（GroupBox 文本）"""
         key = ("gui.map_title_health" if self.map_mode == MAP_MODE_HEALTH
                else "gui.map_title_speed")
-        self.map_frame.config(text=tr(key, n=MAP_CELLS))
+        self.map_frame.setTitle(tr(key, n=MAP_CELLS))
 
     def _layout_legend(self):
         """图例按模式显隐重排：健康模式只留 绿(正常)/红(错误)/灰(未扫描)，
@@ -1346,31 +1586,32 @@ class HDDocApp(ttk.Window):
         灰色两种模式都保留：未扫描/未抽样不是健康或速度判定，藏掉灰色
         会把"还没扫到"误读成"正常"。下标对应创建顺序
         0=ok 1=slow 2=error 3=pending（_legend_swatches/_legend_labels）。
-        先全部收起再按需 pack——否则从速度模式切回健康时"偏慢"会残留。
+        先全部收起再按需显示——否则从速度模式切回健康时"偏慢"会残留。
         """
         for swatch, lbl in zip(self._legend_swatches,
                                (l for l, _k in self._legend_labels)):
-            swatch.pack_forget()
-            lbl.pack_forget()
+            swatch.hide()
+            lbl.hide()
         order = ((0, 2, 3) if self.map_mode == MAP_MODE_HEALTH
                  else (0, 1, 2, 3))
         for i in order:
-            self._legend_swatches[i].pack(side="left", padx=(8, 2))
-            self._legend_labels[i][0].pack(side="left")
+            self._legend_swatches[i].show()
+            self._legend_labels[i][0].show()
 
     def _on_map_mode_toggle(self, _ev=None, redraw=True):
         """切换热力图模式（健康 ↔ 读取速度）：标题与图例即时更新，
         格子按新模式重新逐格上色（_queue_recolor → _flush_cells，
         一次只亮一格，与扫描推进的渲染方式一致）。
 
-        redraw=False 供界面重建（_rebuild_ui）用：彼时 cell_items 还是
-        已销毁画布的旧 id，重排无意义；随后的地图数据恢复会按新模式
-        即刻整幅上色（界面重建不是扫描渲染，不走逐格队列）。
+        redraw=False 供界面重建（_rebuild_ui）用：彼时地图还是新部件、
+        数据未恢复，重排无意义；随后的地图数据恢复会按新模式即刻整幅
+        上色（界面重建不是扫描渲染，不走逐格队列）。
         """
-        self.map_mode = self.combo_map_mode.current()
+        idx = self.combo_map_mode.currentIndex()
+        self.map_mode = idx if idx >= 0 else MAP_MODE_HEALTH
         if self.map_mode < 0:      # 防御：选择被清空时回到健康模式
             self.map_mode = MAP_MODE_HEALTH
-            self.combo_map_mode.current(MAP_MODE_HEALTH)
+            self.combo_map_mode.setCurrentIndex(MAP_MODE_HEALTH)
         self._update_map_title()
         self._layout_legend()
         if not redraw or not self.cells:
@@ -1384,10 +1625,10 @@ class HDDocApp(ttk.Window):
         避免无谓的重排延迟；入队后由 _flush_cells 逐格渲染。
         """
         for i in range(len(self.cells)):
-            if i >= len(self.cell_items) or not self.cell_items[i]:
+            if i >= len(self._painted):
                 continue
             want = self._cell_color(i)
-            if self.canvas_map.itemcget(self.cell_items[i], "fill") != want:
+            if self._painted[i] != want:
                 self.dirty.add(i)
 
     def _add_seg_stat(self, cell_idx, ev):
@@ -1453,19 +1694,16 @@ class HDDocApp(ttk.Window):
                 self.thresholds = max(med * 3.0, 10000.0)
         idx = min(self.dirty)      # 索引顺序：铺格顺序即扫描推进方向
         self.dirty.discard(idx)
-        if idx < len(self.cell_items) and self.cell_items[idx]:
-            self.canvas_map.itemconfig(self.cell_items[idx],
-                                       fill=self._cell_color(idx))
+        if idx < len(self._painted):
+            self._painted[idx] = self._cell_color(idx)
+        # Qt 侧只发一次重绘请求（paintEvent 按当前数据统一取色），
+        # 等价于 ttk 版的 itemconfig(fill=...)
+        self.map_widget.update()
 
     # ---------------------------------------------------------- 事件处理
     def _poll_queue(self):
-        # 窗口已销毁（如提权重启路径 _exit_now）时安静退出，
-        # 避免 Tcl 报 “invalid command name …_poll_queue”
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
-            return
+        # 窗口已销毁（如提权重启路径 _exit_now）时定时器已停
+        # （closeEvent/_cancel_timers），不会再有回调进来
         n = 0
         try:
             while n < 4000:
@@ -1477,8 +1715,7 @@ class HDDocApp(ttk.Window):
         self._flush_cells()
         # 逐格渲染的速率上限由轮询周期决定：待渲染格子多时加快轮询
         # （25ms → 40 格/s，256 格约 6.4s 排干），没有积压时回到 100ms
-        self._poll_after = self.after(25 if len(self.dirty) > 2 else 100,
-                                      self._poll_queue)
+        self._poll_timer.start(25 if len(self.dirty) > 2 else 100)
 
     def _mark_error_block(self, blk_idx, bs=None, total=None):
         """错误块计入热力图：按块起始字节精确落到格（格按字节范围均分，
@@ -1534,11 +1771,21 @@ class HDDocApp(ttk.Window):
         elif et == "failed":
             self._on_failed(ev["message"])
         elif et == "worker_done":
-            self.btn_start.config(state="normal")
-            self.btn_stop.config(state="disabled")
+            self.btn_start.setEnabled(True)
+            self.btn_stop.setEnabled(False)
             self.worker = None
             if self.scan_start_ts and not self.summary:
                 self._set_state("gui.state_stopped")
+
+    def _set_progress_indeterminate(self):
+        """Qt 的不确定进度：量程设为 0（0-0）即进入忙碌动画"""
+        self._progress_indeterminate = True
+        self.progress.setRange(0, 0)
+        self.progress.reset()
+
+    def _set_progress_determinate(self):
+        self._progress_indeterminate = False
+        self.progress.setRange(0, 100)
 
     def _on_tick(self, ev):
         seg = ev.get("segment") or 0
@@ -1551,38 +1798,46 @@ class HDDocApp(ttk.Window):
                  if (self.scan_quick and self.planned_bytes) else self.total_size)
         if total:
             pct = min(100.0, done * 100.0 / total)
-            self.progress["value"] = pct
-            self.lbl_progress.config(text=tr("gui.progress_pct", pct=pct))
+            self._set_progress_determinate()
+            self.progress.setValue(int(pct))
+            self.lbl_progress.setText(tr("gui.progress_pct", pct=pct))
             if bw and done < total:
-                self.lbl_eta.config(text=tr("gui.eta_fmt", v=fmt_duration(
+                self.lbl_eta.setText(tr("gui.eta_fmt", v=fmt_duration(
                     (total - done) / float(bw))))
         elif ev.get("pct") is not None:
-            self.progress["value"] = ev["pct"]
-            self.lbl_progress.config(text=tr("gui.progress_pct", pct=ev["pct"]))
+            self._set_progress_determinate()
+            self.progress.setValue(int(ev["pct"]))
+            self.lbl_progress.setText(tr("gui.progress_pct", pct=ev["pct"]))
         else:
-            self.progress.config(mode="indeterminate")
-            self.progress.start(60)
-            self.lbl_progress.config(text=tr("gui.progress_read",
-                                             sz=fmt_bytes(done)))
-        self.lbl_speed.config(text=tr("gui.speed_fmt", v=fmt_speed(bw)))
+            self._set_progress_indeterminate()
+            self.lbl_progress.setText(tr("gui.progress_read",
+                                         sz=fmt_bytes(done)))
+        self.lbl_speed.setText(tr("gui.speed_fmt", v=fmt_speed(bw)))
         if self.scan_start_ts:
-            self.lbl_elapsed.config(text=tr("gui.elapsed_fmt", v=fmt_duration(
+            self.lbl_elapsed.setText(tr("gui.elapsed_fmt", v=fmt_duration(
                 time.time() - self.scan_start_ts)))
         if ev.get("errors"):
             # fio 的 error 字段是 errno 码而非计数
             code = int(ev["errors"])
-            self.lbl_errors.config(
-                text=tr("gui.errors_code", name=errno_name(code), code=code),
-                bootstyle="danger")
+            self.lbl_errors.setText(
+                tr("gui.errors_code", name=errno_name(code), code=code))
+            self._set_label_level(self.lbl_errors, "error")
         elif ev.get("errors") == 0:
-            self.lbl_errors.config(text=tr("gui.errors_none"),
-                                   bootstyle="success")
+            self.lbl_errors.setText(tr("gui.errors_none"))
+            self._set_label_level(self.lbl_errors, "ok")
+
+    def _set_label_level(self, label, level):
+        """给标签上"语义级别色"（ok/error/warn/info）：与主题无关的
+        饱和底色 + 白字，两套 QSS 下通用。"""
+        bg, fg = BANNER_STYLE.get(level, BANNER_STYLE["info"])
+        label.setStyleSheet(
+            "background: %s; color: %s; border-radius: 3px; padding: 2px 8px;"
+            % (bg, fg))
 
     def _on_finished(self, s):
         self.summary = s
-        self.progress.stop()
-        self.progress.config(mode="determinate")
-        self.progress["value"] = 100
+        self._set_progress_determinate()
+        self.progress.setValue(100)
         self.thresholds = s["slow_thr_us"]
         # 错误块计入热力图单元格（按字节偏移精确到格；live 事件已计过
         # 的块在这里去重，不重复计数）
@@ -1604,9 +1859,9 @@ class HDDocApp(ttk.Window):
         渲染路径。扫描推进、扫描完成与模式切换走逐格队列，见
         _flush_cells 与 _queue_recolor）"""
         for i in range(len(self.cells)):
-            if i < len(self.cell_items) and self.cell_items[i]:
-                self.canvas_map.itemconfig(self.cell_items[i],
-                                           fill=self._cell_color(i))
+            if i < len(self._painted):
+                self._painted[i] = self._cell_color(i)
+        self.map_widget.update()
 
     def _render_result_ui(self, s):
         """渲染已完成扫描的结果区（状态行/导出按钮/错误树/汇总页/横幅）。
@@ -1614,27 +1869,27 @@ class HDDocApp(ttk.Window):
         只写文案与控件状态、不改 cells 数据——切换语言重建界面时用
         同一份 summary 重放（错误块已计入格子，不能重复加）。
         """
-        self.lbl_progress.config(text=tr("gui.progress_pct", pct=100.0))
-        self.lbl_speed.config(text=tr("gui.speed"))
-        self.lbl_elapsed.config(text=tr("gui.elapsed_fmt",
-                                        v=fmt_duration(s["elapsed_s"])))
-        self.lbl_eta.config(text=tr("gui.eta_fmt", v="00:00"))
+        self.lbl_progress.setText(tr("gui.progress_pct", pct=100.0))
+        self.lbl_speed.setText(tr("gui.speed"))
+        self.lbl_elapsed.setText(tr("gui.elapsed_fmt",
+                                    v=fmt_duration(s["elapsed_s"])))
+        self.lbl_eta.setText(tr("gui.eta_fmt", v="00:00"))
         if s["last_errno"]:
-            self.lbl_errors.config(
-                text=tr("gui.errors_code",
-                        name=s["last_errno_name"] or tr("unknown"),
-                        code=s["last_errno"]),
-                bootstyle="danger")
+            self.lbl_errors.setText(
+                tr("gui.errors_code",
+                   name=s["last_errno_name"] or tr("unknown"),
+                   code=s["last_errno"]))
+            self._set_label_level(self.lbl_errors, "error")
         else:
-            self.lbl_errors.config(text=tr("gui.errors_none"),
-                                   bootstyle="success")
+            self.lbl_errors.setText(tr("gui.errors_none"))
+            self._set_label_level(self.lbl_errors, "ok")
         self._set_state("gui.state_done_aborted" if s["aborted"]
                         else "gui.state_done")
-        self.btn_export.config(state="normal")
+        self.btn_export.setEnabled(True)
 
         self._render_error_tree()
         self._render_summary()
-        self.nb.select(self.txt_summary)
+        self.nb.setCurrentWidget(self.txt_summary)
 
         # 结果以界面横幅展示，不弹窗：
         # - 主动停止造成的不完整绝不是坏道；停止前发现的错误只提示
@@ -1659,18 +1914,17 @@ class HDDocApp(ttk.Window):
         self._banner("gui.banner.failed", "error", msg=msg)
 
     def _render_error_tree(self):
-        self.tree_err.delete(*self.tree_err.get_children())
+        self.tree_err.clear()
         if not self.summary:
             return
         s = self.summary
         for idx in sorted(s["error_blocks"]):
-            self.tree_err.insert(
-                "", "end",
-                values=[idx, fmt_bytes(idx * s["bs"]),
-                        s["error_blocks"][idx][:120]])
+            QTreeWidgetItem(self.tree_err,
+                            [str(idx), fmt_bytes(idx * s["bs"]),
+                             s["error_blocks"][idx][:120]])
 
     def _render_summary(self):
-        self.txt_summary.delete("1.0", "end")
+        self.txt_summary.clear()
         if not self.summary:
             return
         s = self.summary
@@ -1716,12 +1970,12 @@ class HDDocApp(ttk.Window):
             lines.append(tr("gui.sum.aborted_note"))
         lines.append("")
         lines.append(tr("gui.sum.threshold_note"))
-        self.txt_summary.insert("1.0", "\n".join(lines))
+        self.txt_summary.setPlainText("\n".join(lines))
 
     def _export_report(self):
         if not self.summary:
             return
-        d = filedialog.askdirectory(title=tr("gui.export"))
+        d = QFileDialog.getExistingDirectory(self, tr("gui.export"))
         if not d:
             return
         outdir = os.path.join(d, "HD_Doc_report_%s"
@@ -1733,22 +1987,25 @@ class HDDocApp(ttk.Window):
         self._banner("gui.log.exported", "ok", d=outdir)
 
     def _update_status(self, pct, bw, eta_s, errors):
-        self.lbl_progress.config(text=tr("gui.progress_pct", pct=pct))
-        self.lbl_speed.config(text=tr("gui.speed_fmt", v=fmt_speed(bw)))
-        self.lbl_eta.config(text=tr("gui.eta_fmt", v=fmt_duration(eta_s)))
-        self.lbl_errors.config(text=tr("gui.errors", n=errors))
+        self.lbl_progress.setText(tr("gui.progress_pct", pct=pct))
+        self.lbl_speed.setText(tr("gui.speed_fmt", v=fmt_speed(bw)))
+        self.lbl_eta.setText(tr("gui.eta_fmt", v=fmt_duration(eta_s)))
+        self.lbl_errors.setText(tr("gui.errors", n=errors))
 
-    def _on_canvas_motion(self, ev):
-        if not self.cells or not self.cell_items:
+    # ---------------------------------------------------------- 悬停提示
+    def _on_map_hover(self, x, y):
+        """鼠标在地图上的悬停信息（None, None = 离开地图）"""
+        if x is None or not self.cells:
+            self.lbl_hover.setText("")
             return
-        c = int((ev.x - self.grid_ox) // self.cell_pitch)
-        r = int((ev.y - self.grid_oy) // self.cell_pitch)
+        c = int((x - self.grid_ox) // self.cell_pitch)
+        r = int((y - self.grid_oy) // self.cell_pitch)
         if c < 0 or r < 0 or c >= self.grid_cols or r >= self.grid_rows:
-            self.lbl_hover.config(text="")
+            self.lbl_hover.setText("")
             return
         idx = r * self.grid_cols + c
         if idx >= len(self.cells):
-            self.lbl_hover.config(text="")
+            self.lbl_hover.setText("")
             return
         cell = self.cells[idx]
         a, b = (self.cell_span[idx]
@@ -1782,4 +2039,38 @@ class HDDocApp(ttk.Window):
             txt += tr("gui.hover_median", v=cell["median"] / 1000.0)
             if cell["max"] is not None:
                 txt += tr("gui.hover_max", v=cell["max"] / 1000.0)
-        self.lbl_hover.config(text=txt)
+        self.lbl_hover.setText(txt)
+
+
+def _app_font():
+    """全局 UI 字体：跟随系统默认（Qt 在各平台选本平台 UI 字体：
+    Windows Segoe UI、Linux/麒麟 Noto Sans CJK 等），只统一点阵大小，
+    不写死字体名——不同系统都有本平台原生观感（与 ttkbootstrap 的
+    set_global_family("Segoe UI") 效果等价但不强制字体存在）。"""
+    f = QApplication.instance().font()
+    f.setPointSize(9)
+    return f
+
+
+def run():
+    """GUI 运行入口（供入口/测试共用）：创建 QApplication 与主窗口并
+    进入事件循环。单实例保护：QApplication 只允许一个，重复调用返回
+    已有实例。"""
+    app = QApplication.instance()
+    created = False
+    if app is None:
+        # 高分屏：Qt5 需要在 QApplication 构造前打开缩放属性
+        for attr in ("AA_EnableHighDpiScaling", "AA_UseHighDpiPixmaps"):
+            if hasattr(Qt, attr):
+                QApplication.setAttribute(getattr(Qt, attr))
+        app = QApplication(sys.argv)
+        created = True
+    app.setApplicationName("HD_Doc")
+    app.setApplicationDisplayName(tr("gui.title", ver=VERSION))
+    # X11/Wayland 下把运行中的窗口匹配到 hd-doc.desktop（图标归属）
+    app.setDesktopFileName("hd-doc")
+    win = HDDocApp()
+    win.show()
+    if created:
+        return app.exec_()
+    return 0

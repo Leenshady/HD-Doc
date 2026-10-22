@@ -7,25 +7,25 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
   HD_Doc_core.py   业务逻辑：权限/提权、分段规划、磁盘枚举、fio 扫描引擎、
                    报告导出（零 GUI 依赖）
   HD_Doc_cli.py    命令行模式：只 import HD_Doc_core，不碰任何 UI
-  HD_Doc_gui.py    GUI 模式：ttkbootstrap 界面（浅色/深色主题），只 import HD_Doc_core
+  HD_Doc_gui.py    GUI 模式：PyQt5 界面（浅色/深色主题），只 import HD_Doc_core
   HD_Doc.py   本文件：参数解析与分发（--cli 才会导入 cli 模块）
 
 用法
   python HD_Doc.py                                          # GUI 模式
-  python HD_Doc.py --cli --target test.img --bs 4M          # 命令行模式（无需 tkinter）
+  python HD_Doc.py --cli --target test.img --bs 4M          # 命令行模式（无需 PyQt5）
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --segment-gb 4
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --quick          # 快速扫描（抽样）
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --limit-mb 64   # 只扫前 64MB（试扫）
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --no-elevate    # 禁止自动提权
 
   Linux（Ubuntu / 银河麒麟 / openKylin，同样支持 GUI）：
-  sudo apt install python3-tk fio && pip install -r requirements.txt
+  sudo apt install python3-pyqt5 fio && pip install -r requirements.txt
   sudo python3 HD_Doc.py                                     # GUI（root 才能扫物理盘）
   python3 HD_Doc.py --cli --target /dev/sda --quick          # 扫 NVMe/ATA 盘
   python3 HD_Doc.py --cli --target ./test.img --bs 4M        # 扫镜像文件（无需 root）
   物理盘在 Linux 上形如 /dev/sda、/dev/nvme0n1；非 root 启动时界面会指引
   pkexec / sudo 路线（见 HD_Doc_core.request_elevation）。
-  rpm 系（麒麟服务器 V10）：sudo dnf install fio python3-tkinter
+  rpm 系（麒麟服务器 V10）：sudo dnf install fio python3-qt5
 
 打包成 Windows 可执行文件
   python build_exe.py          # PyInstaller 单文件打包，一次产出两个变体：
@@ -67,7 +67,7 @@ from HD_Doc_core import VERSION, IS_WIN, auto_elevate_enabled, _ensure_console, 
 def build_parser():
     ap = argparse.ArgumentParser(
         prog="HD Doc",
-        description="HD Doc: read-only disk error scanner (fio + ttkbootstrap)")
+        description="HD Doc: read-only disk error scanner (fio + PyQt5)")
     ap.add_argument("--cli", action="store_true",
                     help="command-line mode (no GUI toolkit needed)")
     ap.add_argument("--version", action="store_true",
@@ -130,17 +130,17 @@ def main(argv=None):
                       getattr(sys, "frozen", False), core.is_admin(),
                       " ".join(sys.argv[1:])))
     if args.cli:
-        # 延迟导入：CLI 路径不加载 ttkbootstrap / GUI 代码
+        # 延迟导入：CLI 路径不加载 PyQt5 / GUI 代码
         from HD_Doc_cli import cli_main
         return cli_main(args)
     try:
-        # 只有 GUI 模式才导入 ttkbootstrap
+        # 只有 GUI 模式才导入 PyQt5
         from HD_Doc_gui import HDDocApp, ensure_admin_at_startup
     except ImportError as e:
-        core.log_event("startup: cannot import GUI (ttkbootstrap?): %s" % e,
+        core.log_event("startup: cannot import GUI (PyQt5?): %s" % e,
                        level="ERROR")
-        print("Error: cannot start GUI (ttkbootstrap not installed? %s)" % e)
-        print("Install it with:  python -m pip install ttkbootstrap")
+        print("Error: cannot start GUI (PyQt5 not installed? %s)" % e)
+        print("Install it with:  python -m pip install PyQt5")
         print("Or use the CLI mode:")
         print("  python HD_Doc.py --cli --target <target> --bs 4M")
         return 2
@@ -149,15 +149,27 @@ def main(argv=None):
     if ensure_admin_at_startup():
         core.log_event("startup: relaunched elevated; this process exits")
         return 0
-    app = HDDocApp()
+    # ---- Qt 应用装配（PyQt5 跨 Windows/Ubuntu/银河麒麟 一致）----
+    # 高分屏缩放属性必须在 QApplication 构造前设置（Qt5 才有这两个开关；
+    # Qt6 起默认开启，属性不存在时静默跳过）
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+    for _attr in ("AA_EnableHighDpiScaling", "AA_UseHighDpiPixmaps"):
+        if hasattr(Qt, _attr):
+            QApplication.setAttribute(getattr(Qt, _attr))
+    qt_app = QApplication(sys.argv)
+    qt_app.setApplicationName("HD_Doc")       # X11 WM_CLASS 的 res_class，
+    qt_app.setDesktopFileName("hd-doc")       # 配合 StartupWMClass 匹配菜单图标
+    win = HDDocApp()
+    win.show()
     # onefile 父进程（bootloader）被外部杀死时（任务管理器结束上面那个
     # 同名进程），本进程与 fio 不会跟着退、会变孤儿继续读盘：父进程监控
     # （Windows 版 PDEATHSIG）发现父死后同步杀 fio 并退出。Job Object
     # 只覆盖"本进程死"的连坐方向，这里是反向兜底。
-    core.watch_parent_process(app._on_parent_died)
-    app.mainloop()
-    core.log_event("gui: mainloop returned")
-    return 0
+    core.watch_parent_process(win._on_parent_died)
+    rc = qt_app.exec_()
+    core.log_event("gui: event loop returned")
+    return rc
 
 
 if __name__ == "__main__":

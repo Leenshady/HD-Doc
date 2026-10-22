@@ -22,7 +22,7 @@
   段数=⌈容量/分段大小⌉（1TB 盘 4G → 233 区）；"整盘一次"（未指定分段大小）时
   按上限均分布点；分段超过容量时合成单区
 - 按需导出报告：不导出就不落盘（segments.csv / errors.csv / summary.txt）
-- GUI（ttkbootstrap，浅色/深色主题）与 CLI 同一套代码；GUI 支持中英双语
+- GUI（PyQt5，浅色/深色主题）与 CLI 同一套代码；GUI 支持中英双语
   （默认英文，可切中文，记住选择）
 - 只读设计：任何时刻不写目标设备
 
@@ -72,11 +72,11 @@ hd-doc                              # 之后随时启动（应用菜单里搜 "H
 从源码运行：
 
 ```bash
-# 1. 安装依赖：tkinter（GUI）+ fio（IO 引擎）
+# 1. 安装依赖：PyQt5（GUI）+ fio（IO 引擎）
 sudo apt update
-sudo apt install python3-tk fio
+sudo apt install python3-pyqt5 fio
 
-# 2. 安装 ttkbootstrap（建议用 venv，避免动系统 Python）
+# 2. 安装 Python 依赖（建议用 venv，避免动系统 Python）
 python3 -m venv ~/.venv/hddoc && ~/.venv/hddoc/bin/pip install -r requirements.txt
 
 # 3. 启动（扫描物理磁盘需要 root；扫镜像文件不需要）
@@ -123,7 +123,7 @@ sudo ~/.venv/hddoc/bin/python HD_Doc.py        # 终端里以 root 启动（推�
 每次运行都会把关键事件追加到唯一一份日志文件 `HD_Doc.log`（与配置同目录：
 Windows 为 `%APPDATA%\HD_Doc\HD_Doc.log`，其他平台为 `~/.config/HD_Doc/`）：
 启动信息、带完整参数的扫描开始、结果汇总、报告导出、语言/主题切换，
-以及任何异常连同堆栈（含 Tk 回调里未捕获的异常——否则它们只进 stderr，
+以及任何异常连同堆栈（含 Qt 回调里未捕获的异常——否则它们只进 stderr，
 打包版没有控制台，用户根本看不到）。示例：
 
 ```
@@ -150,16 +150,16 @@ python build_exe.py
 
 | 平台 | 文件 | fio | 体积 | 适用场景 |
 |------|------|-----|------|----------|
-| Windows | `HD_Doc.exe` | 内置 | ~31 MB | 分发给没装 fio 的电脑 |
-| Windows | `HD_Doc_NoFio.exe` | 不内置 | ~29 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
-| Linux | `HD_Doc` | 内置（需本机装有 fio） | ~35 MB | Ubuntu 上免 Python 环境直接运行 |
-| Linux | `HD_Doc_NoFio` | 不内置 | ~33 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
+| Windows | `HD_Doc.exe` | 内置 | ~65 MB | 分发给没装 fio 的电脑 |
+| Windows | `HD_Doc_NoFio.exe` | 不内置 | ~63 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
+| Linux | `HD_Doc` | 内置（需本机装有 fio） | ~62 MB | Ubuntu 上免 Python 环境直接运行 |
+| Linux | `HD_Doc_NoFio` | 不内置 | ~60 MB | 目标机已装 fio，或用 `--fio 路径` 指定 |
 
 在哪个系统上运行 `build_exe.py` 就打哪个平台的包（PyInstaller 不做交叉
 编译）。两者都内置 `lang/` 语言文件与 `img/` 图标，运行时行为完全一致；
 `--variant fio` / `--variant nofio` 可只打一个，`--onedir` 切换目录模式。
-需要带 tkinter 且装有 PyInstaller 的 Python，并 `pip install ttkbootstrap`
-（见 `requirements.txt`）。`--version` 会如实报告 fio 来源
+需要带 PyQt5 且装有 PyInstaller 的 Python，并 `pip install -r
+requirements.txt`。`--version` 会如实报告 fio 来源
 （`bundled` / `not bundled`）。Linux 打包出的可执行文件同样需要 root 才能
 扫物理磁盘：`sudo ./dist/HD_Doc`。
 
@@ -180,7 +180,7 @@ python build_linux_pkg.py
 
 因为 PyInstaller 不能交叉编译，这里打的是**源码安装包**（纯 Python，与
 CPU 架构无关，x86_64 / arm64 / loongarch 通用）：安装时在目标机器上自动
-完成依赖检查、建 venv、装 ttkbootstrap、注册菜单项——不要求目标机提前有
+完成依赖检查、建 venv、装 PyQt5、注册菜单项——不要求目标机提前有
 任何准备。
 
 ### 银河麒麟安装
@@ -205,12 +205,12 @@ sudo ./HD_Doc-1.0/uninstall.sh          # 卸载
 
 **银河麒麟高级服务器操作系统 V10（rpm 系，无 GUI，仅 CLI 场景）**：用
 `.run` 或 `.tar.gz`，`install.sh` 检测不到 apt 时会自动改用 dnf/yum
-安装依赖（`fio`、`python3-tkinter`），之后 `hd-doc --cli --target /dev/sda`。
+安装依赖（`fio`、`python3-qt5`），之后 `hd-doc --cli --target /dev/sda`。
 
 安装过程会做的事：
 
 1. 识别发行版（`/etc/os-release`，麒麟/openKylin 有专门提示）；检查
-   `python3 >= 3.8`、`tkinter`、`fio`，缺失的组件询问后由 apt（deb 系）
+   `python3 >= 3.8`、`PyQt5`、`fio`，缺失的组件询问后由 apt（deb 系）
    或 dnf/yum（rpm 系）安装（`-y` 全自动；`--no-apt` 完全不动包管理器；
    `--no-fio` 跳过 fio）
 2. 复制程序到 `/opt/hd-doc`（`--prefix DIR` 可改），建 venv 装
@@ -256,13 +256,14 @@ python test/test_job_kill.py       # fio 连坐终止 + 父进程监控（任务
 HD_Doc_core.py  业务逻辑：提权、分段、fio 引擎、报告导出
                 （零 UI 依赖；加载 lang/*.json）
 HD_Doc_cli.py   命令行前端（仅英文）
-HD_Doc_gui.py   ttkbootstrap 界面（中英双语，浅色/深色主题）
+HD_Doc_gui.py   PyQt5 界面（中英双语，浅色/深色主题；跨 Windows/Ubuntu/
+                银河麒麟像素级一致，天然支持高分屏缩放）
 HD_Doc.py       入口：分发到 CLI 或 GUI
 build_exe.py    PyInstaller 打包（Windows/Linux 单文件可执行程序）
 build_linux_pkg.py   Linux 安装包打包（.deb 原生包 + .run 自解压 + .tar.gz）
 make_icon.py    应用图标生成（PIL 绘制：1024 主图 + hicolor 全套 + 多分辨率 .ico）
 packaging/linux/    安装脚本（install.sh / uninstall.sh）与安装包校验
-requirements.txt  运行依赖（ttkbootstrap，GUI 需要）
+requirements.txt  运行依赖（PyQt5，GUI 需要）
 lang/           界面文案（en.json、zh.json）
 img/            程序图标（HD_Doc.ico、HD_Doc.png）
 test/           测试套件（python test/test_units.py 等）

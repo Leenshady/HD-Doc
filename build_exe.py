@@ -5,7 +5,7 @@
 Windows 产物为 .exe；在 Ubuntu/Linux 上运行同一脚本则产出无后缀的 Linux
 可执行文件（PyInstaller 按运行平台交叉，不能在 Windows 上打出 Linux 包）。
 
-用法（在装有 PyInstaller 的 Python 环境里运行，GUI 打包需要该 Python 带 tkinter）：
+用法（在装有 PyInstaller 的 Python 环境里运行，GUI 打包需要该 Python 带 PyQt5）：
     python build_exe.py                # 一次打出两个变体 → dist/
     python build_exe.py --variant fio  # 只打 dist/HD_Doc（自带 fio）
     python build_exe.py --variant nofio# 只打 dist/HD_Doc_NoFio（不含 fio）
@@ -24,8 +24,10 @@ Linux 下自带 fio 的变体依赖系统已安装 fio（打包时 --add-binary 
     用 --cli 模式运行时，程序会自动把输出绑回所在终端（见 HD_Doc.py
     的 _ensure_console）
   - lang/ 语言文件一并打入（--add-data），界面文案在打包版同样可用
-  - GUI 基于 ttkbootstrap：--collect-all ttkbootstrap 收齐其子模块与
-    静态资源（复选框/进度条元素图、图标字体），否则打包版控件会缺图
+  - GUI 基于 PyQt5：PyInstaller 的 PyQt5 钩子会自动带上 QtCore/QtGui/
+    QtWidgets 与平台插件（platforms/、styles/）；这里再显式
+    --collect-all PyQt5 兜底，防止钩子版本差异漏收子模块/资源，
+    打包版在任何机器上都不依赖系统安装的 PyQt5
   - --add-data/--add-binary 的路径分隔符按平台取 os.pathsep
     （Windows 为 ";"，Linux 为 ":"），本脚本在哪个系统上跑就打哪个平台的包
   - 本脚本只负责调用 PyInstaller，打包逻辑（隐藏导入等）都写在命令行参数里
@@ -75,8 +77,7 @@ def build_variant(name, with_fio, onedir):
            "--noconfirm", "--clean",
            "--name", name,
            "--windowed",            # GUI 子系统：双击无黑色控制台窗口
-           "--collect-all", "tkinter",  # 兜底收齐 tkinter 数据文件
-           "--collect-all", "ttkbootstrap",  # ttkbootstrap 子模块 + 静态资源
+           "--collect-all", "PyQt5",     # QtCore/QtGui/QtWidgets + 平台插件
            ]
     if not onedir:
         cmd.append("--onefile")
@@ -147,24 +148,17 @@ def main():
     except ImportError:
         print("[错误] 未安装 PyInstaller。请先执行：")
         print("       python -m pip install pyinstaller")
-        print("       （注意：打包含 tkinter 的 GUI 必须用带 tkinter 的 Python，")
+        print("       （注意：打包含 PyQt5 的 GUI 必须用带 PyQt5 的 Python，")
         print("         例如 python.org 安装包自带的 python.exe）")
         return 2
     try:
-        import tkinter  # noqa: F401
+        import PyQt5.QtWidgets  # noqa: F401
     except ImportError:
-        print("[错误] 当前 Python 没有 tkinter，打不了的 GUI 版。")
-        print("       Windows: 换用 python.org 安装包自带的 Python（自带 tkinter）")
-        print("       Ubuntu/麒麟(apt 系):  sudo apt install python3-tk")
-        print("       麒麟服务器/openEuler(rpm 系):  sudo dnf install python3-tkinter")
+        print("[错误] 未安装 PyQt5（GUI 框架）。请先执行：")
+        print("       python -m pip install PyQt5")
+        print("       Ubuntu/麒麟(apt 系):  sudo apt install python3-pyqt5")
+        print("       麒麟服务器/openEuler(rpm 系):  sudo dnf install python3-qt5")
         return 2
-    try:
-        import ttkbootstrap  # noqa: F401
-    except ImportError:
-        print("[错误] 未安装 ttkbootstrap（GUI 框架）。请先执行：")
-        print("       python -m pip install ttkbootstrap")
-        return 2
-
     # 变体清单：(exe 名, 是否内置 fio)
     variants = {"fio": [(BASE_NAME, True)],
                 "nofio": [(NOFIO_NAME, False)],

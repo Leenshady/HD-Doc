@@ -9,12 +9,13 @@
      （这是误报警报的竞态路径：aborted 可能为 False）
   C. 完整扫描发现真实错误（未停止）→ error 级横幅（真实坏道必须警报）
 
-运行：python test_gui_stop.py（需要带 tkinter 的 Python，如系统 Python 3.12）
+运行：python test_gui_stop.py（需要带 PyQt5 的 Python；offscreen 平台）
 """
 import os
 import sys
 import time
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # 阻止启动时的自动提权弹窗阻塞无人值守测试
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 # 固定英文，保证断言确定
@@ -24,11 +25,15 @@ os.environ["HDTUNE_THEME"] = "bootstrap-light"
 os.environ["HD_DOC_LOG"] = "off"   # 运行日志隔离：不写真实配置目录
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from PyQt5.QtWidgets import QApplication, QMessageBox
 import HD_Doc_gui as H
 
 FIO = "C:/Program Files/fio/fio.exe"
 BIG = os.path.abspath(os.path.join("..", "fio_test", "it_big.img"))
 assert os.path.isfile(BIG), "缺少 512MB 测试镜像，请先跑 test_integration.py"
+
+# QApplication 必须先于任何 QWidget 构造（否则 Qt 直接 qFatal abort）
+qt_app = QApplication.instance() or QApplication(sys.argv)
 
 FAILS = []
 
@@ -42,28 +47,23 @@ def check(name, got, want):
 
 
 def new_app():
-    root = H.tk.Tk()
-    root.withdraw()
     app = H.HDDocApp()
-    app.withdraw()
-    app.geometry("1140x820")
-    app.canvas_map.winfo_width = lambda: 1100
-    app.canvas_map.winfo_height = lambda: 700
-    app.update()
+    app.show()
+    app.map_widget.resize(1100, 700)
+    QApplication.processEvents()
     # 桩掉所有模态框，只记录不阻塞（新版下完成路径不应触发任何一个）
-    # （ttkbootstrap Messagebox 替代 tkinter.messagebox）
     popups = []
-    H.Messagebox.yesno = lambda *a, **k: True
-    H.Messagebox.show_info = lambda *a, **k: popups.append(("info",) + a)
-    H.Messagebox.show_warning = lambda *a, **k: popups.append(("warning",) + a)
-    H.Messagebox.show_error = lambda *a, **k: popups.append(("error",) + a)
-    return root, app, popups
+    QMessageBox.question = lambda *a, **k: popups.append(("yesno",) + a) or QMessageBox.Yes
+    QMessageBox.information = lambda *a, **k: popups.append(("info",) + a)
+    QMessageBox.warning = lambda *a, **k: popups.append(("warning",) + a)
+    QMessageBox.critical = lambda *a, **k: popups.append(("error",) + a)
+    return app, popups
 
 
 def wait_done(app, limit=90):
     t0 = time.time()
     while time.time() - t0 < limit:
-        app.update()
+        QApplication.processEvents()
         if app.summary is not None and app.worker is None:
             return True
         time.sleep(0.05)
@@ -72,12 +72,12 @@ def wait_done(app, limit=90):
 
 # ---------------------------------------------------------------- 场景 A
 print("== 场景 A：扫描中点停止（用户反馈的直接回归） ==")
-root, app, popups = new_app()
-app.var_target.set(BIG)
-app.var_fio.set(FIO)
-app.var_bs.set("4M")
-app.var_seg.set("256M")          # 分段下拉恢复：512MB/256M = 2 段，扫几秒
-app.var_quick.set(False)
+app, popups = new_app()
+app._set_target_text(BIG)
+app.entry_fio.setCurrentText(FIO)
+app.combo_bs.setCurrentIndex(app.combo_bs.findText("4M"))
+app.combo_seg.setCurrentIndex(app.combo_seg.findText("256M"))  # 512MB/256M = 2 段
+app.chk_quick.setChecked(False)
 app._start_scan()
 check("A 扫描线程已启动", app.worker is not None, True)
 time.sleep(1.2)                  # 扫到一半
@@ -111,22 +111,21 @@ for ci, c in enumerate(app.cells):
         bad.append(ci)
 check("A 有数据的格必须被完整段覆盖", bad, [])
 check("A 热力图格数固定", len(app.cells), H.MAP_CELLS)
-check("A 状态标签=完成（中止）", app.lbl_state.cget("text"), "Done (aborted)")
-check("A 错误标签=无", app.lbl_errors.cget("text"), "Errors: none")
-check("A 错误树为空", len(app.tree_err.get_children()), 0)
+check("A 状态标签=完成（中止）", app.lbl_state.text(), "Done (aborted)")
+check("A 错误标签=无", app.lbl_errors.text(), "Errors: none")
+check("A 错误树为空", app.tree_err.topLevelItemCount(), 0)
 check("A 无任何弹窗（不报磁盘错误）", popups, [])
 check("A 横幅为正常完成口径（非错误警报）",
-      "read errors" in app.lbl_banner.cget("text")
-      and "physical damage" not in app.lbl_banner.cget("text"), True)
-txt = app.txt_summary.get("1.0", "end")
+      "read errors" in app.lbl_banner.text()
+      and "physical damage" not in app.lbl_banner.text(), True)
+txt = app.txt_summary.toPlainText()
 check("A 汇总含停止状态行", "stopped by user" in txt, True)
 app._cancel_timers()
-app.destroy()
-root.destroy()
+app.close()
 
 # ---------------------------------------------------------------- 场景 B
 print("\n== 场景 B：停止落在扫描结束后（竞态路径，aborted=False） ==")
-root, app, popups = new_app()
+app, popups = new_app()
 # 直接以"停止前发现真实错误 + aborted=False + stop_requested=True"的汇总
 # 驱动 _on_finished——这正是竞态下旧逻辑会误报的组合
 app.total_size = 8 << 20
@@ -145,21 +144,20 @@ fake = {
 app._on_finished(fake)
 check("B 无任何弹窗（含不弹 warning）", popups, [])
 check("B 横幅为停止+错误提示口径",
-      "stopped by user" in app.lbl_banner.cget("text"), True)
+      "stopped by user" in app.lbl_banner.text(), True)
 check("B 横幅不含'物理损伤'警报口径",
-      "physical damage" in app.lbl_banner.cget("text"), False)
-check("B 状态标签=完成", app.lbl_state.cget("text"), "Done")
+      "physical damage" in app.lbl_banner.text(), False)
+check("B 状态标签=完成", app.lbl_state.text(), "Done")
 check("B 汇总含停止状态行",
-      "stopped by user" in app.txt_summary.get("1.0", "end"), True)
+      "stopped by user" in app.txt_summary.toPlainText(), True)
 check("B 错误块计入热力图（块5 偏移 20MB 越界 → 钳制到末格）",
       app.cells[H.MAP_CELLS - 1]["errors"], 1)
 app._cancel_timers()
-app.destroy()
-root.destroy()
+app.close()
 
 # ---------------------------------------------------------------- 场景 C
 print("\n== 场景 C：完整扫描发现真实错误（未停止，必须警报） ==")
-root, app, popups = new_app()
+app, popups = new_app()
 fake2 = dict(fake)
 fake2["stop_requested"] = False
 fake2["aborted"] = False
@@ -168,12 +166,11 @@ app._reset_map([(0, 4 << 20, None), (4 << 20, 4 << 20, None)])
 app._on_finished(fake2)
 check("C 无弹窗（改为 error 级横幅）", popups, [])
 check("C 横幅为错误警报口径",
-      "physical damage" in app.lbl_banner.cget("text"), True)
-check("C 横幅样式为错误级（danger bootstyle）",
-      app.lbl_banner.cget("style"), H.BANNER_BOOTSTYLE["error"] + ".TLabel")
+      "physical damage" in app.lbl_banner.text(), True)
+check("C 横幅样式为错误级（BANNER_STYLE 的 error 底色）",
+      "#c62828" in app.lbl_banner.styleSheet(), True)
 app._cancel_timers()
-app.destroy()
-root.destroy()
+app.close()
 
 print()
 if FAILS:

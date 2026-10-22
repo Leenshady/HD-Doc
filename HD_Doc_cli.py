@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HD_Doc_cli.py —— 命令行模式（只依赖 HD_Doc_core，不 import tkinter / GUI）
+HD_Doc_cli.py —— 命令行模式（只依赖 HD_Doc_core，不 import GUI 代码）
 
 用法由入口 HD_Doc.py 解析参数后调用 cli_main(args)；
 也可以直接 python HD_Doc.py --cli --target <目标> ...

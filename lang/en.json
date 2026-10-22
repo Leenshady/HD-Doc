@@ -103,7 +103,7 @@
   "gui.relaunch": "Restart as administrator",
   "gui.relaunch_linux": "Restart as root",
   "gui.bs_values": "Auto,512K,1M,2M,4M,8M,16M,32M,64M",
-  "gui.seg_values": "Whole disk at once (fastest),512M,1G,2G,4G,8G,16G,32G,64G",
+  "gui.seg_values": "Whole disk at once (fastest),64M,128M,256M,512M,1G,2G,4G,8G,16G,32G,64G",
   "gui.sample_values": "1M,2M,4M,8M,16M,32M,64M",
   "gui.map_mode": "Heatmap:",
   "gui.map_mode_values": "Disk health,Read speed",

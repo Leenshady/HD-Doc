@@ -14,7 +14,7 @@
 #
 # 安装内容:
 #   /opt/hd-doc/                 程序文件（源码 + lang/ + img/）
-#   /opt/hd-doc/venv/            Python 虚拟环境（ttkbootstrap）
+#   /opt/hd-doc/venv/            Python 虚拟环境（PyQt5）
 #   /usr/local/bin/hd-doc        启动器（GUI 与 CLI 统一入口）
 #   /usr/share/applications/hd-doc.desktop   应用菜单项
 #   /usr/share/icons/hicolor/256x256/apps/hd-doc.png   图标
@@ -130,12 +130,12 @@ apt_install() {
                 || warn "apt 安装失败: $1（可稍后手动重试）"
             ;;
         dnf|yum)
-            # rpm 系包名映射：python3-tk → python3-tkinter；
+            # rpm 系包名映射：python3-pyqt5 → python3-qt5；
             # python3-venv 在 rpm 系不存在（venv 随 python3 提供）→ 跳过
             _pkgs=""
             for _p in $1; do
                 case "$_p" in
-                    python3-tk) _p=python3-tkinter ;;
+                    python3-pyqt5) _p=python3-qt5 ;;
                     python3-venv) continue ;;
                 esac
                 _pkgs="$_pkgs $_p"
@@ -153,10 +153,10 @@ apt_install() {
     esac
 }
 
-# tkinter（GUI 必需；CLI 模式不需要）
-if ! $PYTHON -c 'import tkinter' >/dev/null 2>&1; then
-    warn "当前 Python 缺少 tkinter（GUI 需要）"
-    APT_PKGS="python3-tk"
+# PyQt5（GUI 必需；CLI 模式不需要）
+if ! $PYTHON -c 'import PyQt5.QtWidgets' >/dev/null 2>&1; then
+    warn "当前 Python 缺少 PyQt5（GUI 需要）"
+    APT_PKGS="python3-pyqt5"
 fi
 # venv（优先方案；失败时可回退到系统 Python）
 if ! $PYTHON -m venv --help >/dev/null 2>&1; then
@@ -189,26 +189,26 @@ chmod 755 "$PREFIX/HD_Doc.py"
 # ---------------------------------------------------------------- 虚拟环境
 PY_MODE=system
 if $PYTHON -m venv --system-site-packages "$PREFIX/venv" >/dev/null 2>&1; then
-    info "创建虚拟环境并安装依赖（ttkbootstrap）..."
+    info "创建虚拟环境并安装依赖（PyQt5）..."
     if "$PREFIX/venv/bin/pip" install --quiet --disable-pip-version-check \
             -r "$PREFIX/requirements.txt" >/dev/null 2>&1 \
-            && "$PREFIX/venv/bin/python" -c 'import ttkbootstrap' >/dev/null 2>&1; then
+            && "$PREFIX/venv/bin/python" -c 'import PyQt5.QtWidgets' >/dev/null 2>&1; then
         PY_MODE=venv
     else
-        warn "venv 内安装 ttkbootstrap 失败（网络？），尝试回退系统 Python"
+        warn "venv 内安装 PyQt5 失败（网络？），尝试回退系统 Python"
         rm -rf "$PREFIX/venv"
     fi
 else
     warn "无法创建 venv（缺 python3-venv？），尝试使用系统 Python"
 fi
 if [ "$PY_MODE" = system ]; then
-    if $PYTHON -c 'import ttkbootstrap' >/dev/null 2>&1; then
-        info "系统 Python 已具备 ttkbootstrap，直接使用"
+    if $PYTHON -c 'import PyQt5.QtWidgets' >/dev/null 2>&1; then
+        info "系统 Python 已具备 PyQt5，直接使用"
     else
-        warn "未找到 ttkbootstrap，GUI 暂无法启动。安装任选其一："
-        warn "  sudo $PREFIX/venv/bin/pip install ttkbootstrap   （先装好 python3-venv）"
-        warn "  sudo apt install python3-pip && pip install ttkbootstrap   （rpm 系用 dnf）"
-        warn "CLI 模式不依赖 ttkbootstrap，可先用：hd-doc --cli --target 镜像文件"
+        warn "未找到 PyQt5，GUI 暂无法启动。安装任选其一："
+        warn "  sudo $PREFIX/venv/bin/pip install PyQt5   （先装好 python3-venv）"
+        warn "  sudo apt install python3-pyqt5   （rpm 系用 dnf install python3-qt5）"
+        warn "CLI 模式不依赖 PyQt5，可先用：hd-doc --cli --target 镜像文件"
     fi
 fi
 printf '%s' "$PY_MODE" > "$PREFIX/.python_mode"

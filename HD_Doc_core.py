@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HD_Doc_core.py —— 业务逻辑层（零 UI 依赖：不 import tkinter，不弹任何窗口）
+HD_Doc_core.py —— 业务逻辑层（零 UI 依赖：不 import 任何 GUI 框架，不弹任何窗口）
 
 职责
   - 管理员权限检测与自动提权（is_admin / request_elevation）
@@ -14,7 +14,7 @@ HD_Doc_core.py —— 业务逻辑层（零 UI 依赖：不 import tkinter，不
   - fio 扫描引擎 FioScanner（分段执行 / 流式 JSON 解析 / 段级统计）
   - 报告导出 write_reports
 
-本模块被 HD_Doc_cli（命令行）与 HD_Doc_gui（tkinter 界面）共同依赖；
+本模块被 HD_Doc_cli（命令行）与 HD_Doc_gui（PyQt5 界面）共同依赖；
 CLI 路径只 import 本模块，不会触碰任何 UI 代码。
 """
 
@@ -314,9 +314,10 @@ def set_language(lang):
     return True
 
 
-# 界面主题（ttkbootstrap 主题名）：默认浅色，可切换深色；持久化方式与
-# 语言一致（同一份 config.json）。GUI 切换主题 = 保存偏好 + 实时
-# theme_use() 换色（原生 tk 控件手工同步），不重启进程。
+# 界面主题：默认浅色，可切换深色；持久化方式与语言一致（同一份 config.json）。
+# 主题名沿用 "bootstrap-light" / "bootstrap-dark"（历史命名，保证旧配置兼容），
+# 实际渲染由 GUI 层用 PyQt5 QSS 完成：切换主题 = 保存偏好 + 换样式表 + 热力图
+# 逐格换色，不重启进程。
 # 环境变量 HDTUNE_THEME=bootstrap-light|bootstrap-dark 可临时覆盖（测试用）。
 THEMES = ("bootstrap-light", "bootstrap-dark")
 DEFAULT_THEME = "bootstrap-light"
@@ -325,7 +326,7 @@ _THEME_LOADED = False
 
 
 def get_theme():
-    """当前 ttkbootstrap 主题名（"bootstrap-light" / "bootstrap-dark"）。
+    """当前界面主题名（"bootstrap-light" / "bootstrap-dark"，历史命名沿用）。
 
     与语言一致：HDTUNE_THEME 环境变量仅在首次加载时生效（测试/调试用的
     一次性覆盖），之后以 set_theme 的进程内切换为准；非法值回退浅色。
@@ -610,7 +611,7 @@ def pkexec_gui_spawn(argv=None):
     popen 为 None 且 err 为 None —— 当前已是 root，无需提权；
     popen 为 None 且 err 非 None —— 启动失败（无 pkexec / 异常）。
 
-    为什么不用同步 sudo：GUI 场景（Tk，通常无控制终端）下 sudo 会因
+    为什么不用同步 sudo：GUI 场景（无控制终端）下 sudo 会因
     "no tty present and no askpass program" 失败，且 subprocess.call
     会阻塞界面线程直到子进程结束。
     """
@@ -667,7 +668,7 @@ def request_elevation(argv=None, wait=False, gui=False):
         except AttributeError:
             pass
         if gui:
-            # GUI 场景（Tk，通常无控制终端）：同步 sudo 会因 "no tty present
+            # GUI 场景（无控制终端）：同步 sudo 会因 "no tty present
             # and no askpass program" 失败，且 subprocess.call 阻塞界面线程
             # 直到子进程结束——必须异步。改用 pkexec（Ubuntu 桌面默认自带，
             # 走 polkit 弹图形密码框），启动后本进程随即退出。

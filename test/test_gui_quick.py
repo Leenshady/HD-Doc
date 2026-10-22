@@ -2,52 +2,56 @@
 """GUI 扫描全链路：快速扫描（512MB 镜像抽样区域）+ 全段扫描（8MB 镜像），
 验证段级热力图填充、悬停信息与 _run_worker 主线程变量读取（回归）。
 
-界面固定英文（HDTUNE_LANG=en），断言按英文口径。"""
-import os, sys, time, types
+界面固定英文（HDTUNE_LANG=en），断言按英文口径。
+offscreen 平台（QT_QPA_PLATFORM=offscreen）：无显示环境跑真实 fio 扫描。"""
+import os, sys, time
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 os.environ["HDTUNE_LANG"] = "en"
 os.environ["HDTUNE_THEME"] = "bootstrap-light"
 os.environ["HD_DOC_LOG"] = "off"   # 运行日志隔离：不写真实配置目录
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from PyQt5.QtWidgets import QApplication, QMessageBox
 import HD_Doc_gui as H
 
 FIO = "C:/Program Files/fio/fio.exe"
 BIG = os.path.abspath(os.path.join("..", "fio_test", "it_big.img"))
 assert os.path.isfile(BIG), "缺少 512MB 测试镜像，请先跑 test_integration.py"
 
-root = H.tk.Tk(); root.withdraw()
-app = H.HDDocApp(); app.withdraw()
-app.geometry("1140x820")
-app.canvas_map.winfo_width = lambda: 1100
-app.canvas_map.winfo_height = lambda: 700
-app.update()
+qt_app = QApplication.instance() or QApplication(sys.argv)
+app = H.HDDocApp()
+app.show()
+app.map_widget.resize(1100, 700)   # offscreen 下显式给地图部件尺寸
+QApplication.processEvents()
 
 # 镜像文件目标：不需要管理员；桩掉所有模态框防阻塞
-# （ttkbootstrap Messagebox：镜像目标不会触发确认框，桩上只为兜底）
-H.Messagebox.yesno = lambda *a, **k: True
-H.Messagebox.show_info = lambda *a, **k: None
-H.Messagebox.show_warning = lambda *a, **k: None
-H.Messagebox.show_error = lambda *a, **k: None
+# （Qt QMessageBox：镜像目标不会触发确认框，桩上只为兜底）
+QMessageBox.question = lambda *a, **k: QMessageBox.Yes
+QMessageBox.information = lambda *a, **k: QMessageBox.Yes
+QMessageBox.warning = lambda *a, **k: QMessageBox.Yes
+QMessageBox.critical = lambda *a, **k: QMessageBox.Yes
 
-app.var_target.set(BIG)
-app.var_fio.set(FIO)
+app._set_target_text(BIG)
+app.entry_fio.setCurrentText(FIO)
 # 快速扫描与全段扫描共用同一套分段设置（用户反馈"取消固定 256 段，按照
 # 分段设置分段"）：分段下拉设 64M → 512MB 盘切 8 区，每区抽 16M 样本，
 # 覆盖"多区域整区点亮"场景（区头抽样结果覆盖整区点亮热力图）
-app.var_seg.set("64M")
+app.combo_seg.setCurrentIndex(app.combo_seg.findText("64M"))
 
 
 def _drain(a, limit=15):
     """等逐格渲染队列排干（一次只亮一格；256 格约 6.4s）"""
     t0 = time.time()
     while a.dirty and time.time() - t0 < limit:
-        a.update()
+        QApplication.processEvents()
         time.sleep(0.02)
     assert not a.dirty, "待渲染格子未排干"
 
 
-app.var_quick.set(True)           # 快速扫描：每区抽 16M
-app.var_quick_sample.set("16M")
+app.chk_quick.setChecked(True)     # 快速扫描：每区抽 16M
+app.combo_quick_sample.setCurrentIndex(
+    app.combo_quick_sample.findText("16M"))
 app._start_scan()
 print("扫描线程已启动 | scan_quick=%s | 格数=%d" % (app.scan_quick, len(app.cells)))
 assert app.scan_quick is True
@@ -64,13 +68,13 @@ assert app.cell_region[0] == 0 and app.cell_region[255] == 7
 # 轮询直到扫描完成并消费完 finished/worker_done 事件（_poll_queue 100ms 周期）
 t0 = time.time()
 while time.time() - t0 < 150:
-    app.update()
+    QApplication.processEvents()
     if app.summary is not None and app.worker is None:
         break
     time.sleep(0.05)
 else:
     raise SystemExit("超时：扫描未在 150s 内结束")
-app.update()
+QApplication.processEvents()
 
 s = app.summary
 assert s, "扫描未产出汇总"
@@ -97,25 +101,25 @@ assert all(c["median"] is not None for c in app.cells)
 # 悬停（第一格 = 区域 #1 的 16MB 抽样供数；坐标按 pitch 与居中偏移反算）
 def _hover_cell(a, idx):
     r, c = divmod(idx, a.grid_cols)
-    a._on_canvas_motion(types.SimpleNamespace(
-        x=int(a.grid_ox + (c + 0.5) * a.cell_pitch),
-        y=int(a.grid_oy + (r + 0.5) * a.cell_pitch)))
+    a._on_map_hover(int(a.grid_ox + (c + 0.5) * a.cell_pitch),
+                    int(a.grid_oy + (r + 0.5) * a.cell_pitch))
+
 
 _hover_cell(app, 0)
-hover = app.lbl_hover.cget("text")
+hover = app.lbl_hover.text()
 print("悬停: %r" % hover)
 assert ("Cell #1/256" in hover and "region sample 16.0 MB (region 64.0 MB)" in hover
         and "start block 0" in hover and "read 32 blocks" in hover), hover
 # 区2 的首格（第 33 格）：同样显示区域抽样上下文
 _hover_cell(app, 32)
-hover2 = app.lbl_hover.cget("text")
+hover2 = app.lbl_hover.text()
 print("区2 格悬停: %r" % hover2)
 assert "Cell #33/256" in hover2 and "region sample 16.0 MB" in hover2, hover2
 # 未抽样的格（停止过早/区域无数据）：悬停标注"未抽样"而非"未扫描"
 # ——白盒清掉一格中位数验证该分支（整区点亮后正常不会有灰格）
 app.cells[100]["median"] = None
 _hover_cell(app, 100)
-hover_gap = app.lbl_hover.cget("text")
+hover_gap = app.lbl_hover.text()
 print("未抽样格悬停: %r" % hover_gap)
 assert "Cell #101/256" in hover_gap and "not sampled" in hover_gap, hover_gap
 app.cells[100]["median"] = app.cells[99]["median"]   # 还原，避免影响后续断言
@@ -125,29 +129,26 @@ app.cells[100]["median"] = app.cells[99]["median"]   # 还原，避免影响后�
 _drain(app)      # 先等逐格渲染排干：缩放前后比对必须是最终态，
                  # 否则"填充色不变"断言比对的是渲染中间态
 meds_before = [c["median"] for c in app.cells]
-colors_before = [app.canvas_map.itemcget(it, "fill") for it in app.cell_items]
+colors_before = list(app._painted)
 old_grid = (app.cell_pitch, app.grid_cols, app.grid_rows)
-app.canvas_map.winfo_width = lambda: 760      # 模拟窗口缩小
-app.canvas_map.winfo_height = lambda: 420
-app._on_canvas_configure(None)                # 触发防抖重排
+app.map_widget.resize(760, 420)   # 模拟窗口缩小
 t1 = time.time()
-while app._map_cfg_after and time.time() - t1 < 3:
-    app.update()
+while app._resize_timer.isActive() and time.time() - t1 < 3:
+    QApplication.processEvents()
     time.sleep(0.02)
-assert app._map_cfg_after is None, "缩放重排回调应已执行"
+assert not app._resize_timer.isActive(), "缩放重排定时器应已触发"
 assert (app.cell_pitch, app.grid_cols, app.grid_rows) != old_grid, \
     "网格参数应随画布尺寸变化"
-# 所有格子矩形都落在新画布内（坐标已重排，没有留在旧位置的块）
-for it in app.cell_items:
-    x0, y0, x1, y1 = app.canvas_map.coords(it)
-    assert 0 <= x0 and x1 <= 761 and 0 <= y0 and y1 <= 421, (x0, y0, x1, y1)
+assert app.grid_ox + app.grid_cols * app.cell_pitch <= 760 + 1e-6, \
+    "重排后网格不得超出新画布宽度"
+assert app.grid_oy + app.grid_rows * app.cell_pitch <= 420 + 1e-6, \
+    "重排后网格不得超出新画布高度"
 # 数据不动：中位数与填充色逐一比对（缩放是纯几何变化）
 assert [c["median"] for c in app.cells] == meds_before
-assert [app.canvas_map.itemcget(it, "fill")
-        for it in app.cell_items] == colors_before
+assert list(app._painted) == colors_before
 # 缩放后悬停仍按新网格定位到同一批格子
 _hover_cell(app, 255)
-hover_rz = app.lbl_hover.cget("text")
+hover_rz = app.lbl_hover.text()
 print("缩放后悬停: %r" % hover_rz)
 assert "Cell #256/256" in hover_rz, hover_rz
 print("缩放自适应 OK：pitch %.1f→%.1f，网格 %d×%d → %d×%d"
@@ -160,39 +161,39 @@ app.cells[7]["errors"] = 1                 # 读取错误 → 两种模式都红
 app.cells[10]["median"] = 10 ** 9          # 远超阈值的延迟
 app.cells[10]["max"] = 10 ** 9
 # 健康模式：错误格红；慢格绿（读得慢但不是错误，健康只有绿/红两色）
-app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app.combo_map_mode.setCurrentIndex(H.MAP_MODE_HEALTH)
 app._on_map_mode_toggle()
 _drain(app)                      # 逐格渲染：等队列排干再断言填充色
-assert app.canvas_map.itemcget(app.cell_items[7], "fill") == H.COLOR_ERROR
-assert app.canvas_map.itemcget(app.cell_items[10], "fill") == H.COLOR_OK
-assert app.canvas_map.itemcget(app.cell_items[0], "fill") == H.COLOR_OK
-assert app._legend_labels[1][0].winfo_manager() == "", \
+assert app._painted[7] == H.COLOR_ERROR
+assert app._painted[10] == H.COLOR_OK
+assert app._painted[0] == H.COLOR_OK
+assert app._legend_labels[1][0].isVisible() is False, \
     "健康模式图例不应有'偏慢'"
 # 速度模式：错误格仍红；慢格变黄；正常格绿；图例补回"偏慢"
-app.combo_map_mode.current(H.MAP_MODE_SPEED)
+app.combo_map_mode.setCurrentIndex(H.MAP_MODE_SPEED)
 app._on_map_mode_toggle()
 _drain(app)
-assert app.canvas_map.itemcget(app.cell_items[7], "fill") == H.COLOR_ERROR
-assert app.canvas_map.itemcget(app.cell_items[10], "fill") == H.COLOR_SLOW
-assert app.canvas_map.itemcget(app.cell_items[0], "fill") == H.COLOR_OK
-assert app._legend_labels[1][0].winfo_manager() == "pack"
-assert "read speed" in app.map_frame.cget("text").lower()
+assert app._painted[7] == H.COLOR_ERROR
+assert app._painted[10] == H.COLOR_SLOW
+assert app._painted[0] == H.COLOR_OK
+assert app._legend_labels[1][0].isVisible() is True
+assert "read speed" in app.map_frame.title().lower()
 # 还原注入并切回健康模式（不影响后续导出断言）
 app.cells[7]["errors"] = 0
 app.cells[10]["median"] = app.cells[9]["median"]
 app.cells[10]["max"] = app.cells[9]["max"]
-app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app.combo_map_mode.setCurrentIndex(H.MAP_MODE_HEALTH)
 app._on_map_mode_toggle()
 _drain(app)
 print("双模式切换 OK：健康=绿/红（慢格也绿），速度=绿/黄/红")
 
 # 汇总文本含快速扫描覆盖率行（英文口径）
-txt = app.txt_summary.get("1.0", "end")
+txt = app.txt_summary.toPlainText()
 assert "quick scan" in txt and "% of capacity" in txt
 print("汇总文本含覆盖率行 OK")
 
 # 导出按钮可用 + 导出写入报告（GUI 语言 = en）
-assert str(app.btn_export.cget("state")) == "normal"
+assert app.btn_export.isEnabled()
 import tempfile
 exp = tempfile.mkdtemp(prefix="HD_Doc_gui_export_")
 app._export_report = lambda: H.write_reports(
@@ -206,65 +207,98 @@ assert "HD Doc Disk Error Scan Report" in head
 print("GUI 导出 OK（英文报告，3 个文件）")
 
 app._cancel_timers()
-app.destroy()
-root.destroy()      # 连同隐藏 root 一起销毁：ttkbootstrap 的 Style 是进程级
-                    # 单例，旧解释器还活着时新 Window 建不出主题对象
-                    # （_theme_objects 为空 → KeyError），与 test_gui_stop 相同做法
+app.close()
 
 # ---- 第二阶段：普通全段扫描（回归：_run_worker 曾在工作线程读 Tk 变量
-# 导致 "main thread is not in main loop"，快速/全段两条路径都要覆盖）----
-SMALL = os.path.abspath(os.path.join("..", "fio_test", "it_small.img"))
-assert os.path.isfile(SMALL), "缺少 8MB 测试镜像"
-root = H.tk.Tk(); root.withdraw()
-app2 = H.HDDocApp(); app2.withdraw()
-app2.geometry("1140x820")
-app2.canvas_map.winfo_width = lambda: 1100
-app2.canvas_map.winfo_height = lambda: 700
-app2.update()
-app2.var_target.set(SMALL)
-app2.var_fio.set(FIO)
-app2.var_bs.set("1M")              # 显式块大小：8 块，断言确定
-app2.var_seg.set("4M")             # 分段下拉恢复：8MB/4M = 2 段
-                                 # （默认 4G > 8MB 会合成 1 段，测不到多段聚合）
-app2.var_quick.set(False)
+# 导致 "main thread is not in main loop"，快速/全段两条路径都要覆盖；
+# Qt 控件同样只能在主线程读，本阶段回归该约束）----
+app2 = H.HDDocApp()
+app2.show()
+app2.map_widget.resize(1100, 700)
+QApplication.processEvents()
+app2._set_target_text(BIG)
+app2.entry_fio.setCurrentText(FIO)
+app2.combo_bs.setCurrentIndex(app2.combo_bs.findText("1M"))  # 显式块大小
+app2.combo_seg.setCurrentIndex(app2.combo_seg.findText("128M"))  # 512MB/128M = 4 段
+app2.chk_quick.setChecked(False)
 app2._start_scan()
 assert app2.scan_quick is False
-# 固定格数：8MB 小盘同样 256 格；2 段各覆盖 128 格（4M 段 = 128 格 × 32KB）
+# 固定格数：512MB 盘同样 256 格；4 段各覆盖 64 格（128M 段 = 64 格 × 2MB）
 assert len(app2.cells) == H.MAP_CELLS, len(app2.cells)
-assert len(app2.seg_cells) == 2, len(app2.seg_cells)
-assert app2.seg_cells[0] == list(range(0, 128)), app2.seg_cells[0][:3]
-assert app2.seg_cells[1] == list(range(128, 256)), app2.seg_cells[1][:3]
+assert len(app2.seg_cells) == 4, len(app2.seg_cells)
+assert app2.seg_cells[0] == list(range(0, 64)), app2.seg_cells[0][:3]
+assert app2.seg_cells[3] == list(range(192, 256)), app2.seg_cells[3][:3]
 t0 = time.time()
-while time.time() - t0 < 60:
-    app2.update()
+while time.time() - t0 < 120:
+    QApplication.processEvents()
     if app2.summary is not None and app2.worker is None:
         break
     time.sleep(0.05)
 else:
-    raise SystemExit("超时：全段扫描未在 60s 内结束")
-app2.update()
+    raise SystemExit("超时：全段扫描未在 120s 内结束")
+QApplication.processEvents()
 s2 = app2.summary
 assert s2 and not s2.get("quick"), s2
-assert len(s2["segments"]) == 2
-assert s2["n_blocks"] == 8, s2["n_blocks"]
-# 段少格多：2 段覆盖全部 256 格，每格 4 块（1M 块大小 / 4M 段）
+assert len(s2["segments"]) == 4
+assert s2["n_blocks"] == 512, s2["n_blocks"]
+# 段多格少：4 段覆盖全部 256 格；一段的统计聚合进它覆盖的每格
+# （128M 段 = 128 块 × 1M → 每格 n=128，见 _add_seg_stat）
 filled2 = sum(1 for c in app2.cells if c["median"] is not None)
 print("全段扫描: %d 段 %d 块 | 填充 %d/%d 格 | 耗时 %.1fs"
       % (len(s2["segments"]), s2["n_blocks"], filled2, len(app2.cells),
          s2["elapsed_s"]))
 assert filled2 == H.MAP_CELLS, filled2
-assert all(c["n"] == 4 for c in app2.cells), [c["n"] for c in app2.cells[:4]]
-# 逐格渲染：每段覆盖 128 格，队列排干后全部格子按健康模式着绿色
+assert all(c["n"] == 128 for c in app2.cells), [c["n"] for c in app2.cells[:4]]
+# 逐格渲染：每段覆盖 64 格，队列排干后全部格子按健康模式着绿色
 _drain(app2)
-assert all(app2.canvas_map.itemcget(it, "fill") == H.COLOR_OK
-           for it in app2.cell_items), "全部格子应为绿色"
-app2._on_canvas_motion(types.SimpleNamespace(
-    x=int(app2.grid_ox + app2.cell_pitch / 2),
-    y=int(app2.grid_oy + app2.cell_pitch / 2)))
-hover2 = app2.lbl_hover.cget("text")
-assert "Cell #1/256" in hover2 and "read 4 blocks" in hover2, hover2
+assert all(f == H.COLOR_OK for f in app2._painted), "全部格子应为绿色"
+app2._on_map_hover(int(app2.grid_ox + app2.cell_pitch / 2),
+                   int(app2.grid_oy + app2.cell_pitch / 2))
+hover2 = app2.lbl_hover.text()
+assert "Cell #1/256" in hover2 and "read 128 blocks" in hover2, hover2
 print("全段扫描悬停: %r" % hover2)
 app2._cancel_timers()
-app2.destroy()
-root.destroy()
-print("\nGUI 扫描全链路（快速 + 全段 + 导出）通过")
+app2.close()
+
+# ---- 第三阶段：8MB 小盘全段扫描（单段广播到全部格子的边界场景）----
+SMALL = os.path.abspath(os.path.join("..", "fio_test", "it_small.img"))
+assert os.path.isfile(SMALL), "缺少 8MB 测试镜像"
+app3 = H.HDDocApp()
+app3.show()
+app3.map_widget.resize(1100, 700)
+QApplication.processEvents()
+app3._set_target_text(SMALL)
+app3.entry_fio.setCurrentText(FIO)
+app3.combo_bs.setCurrentIndex(app3.combo_bs.findText("1M"))  # 8 块，断言确定
+# 分段默认 4G > 8MB → 合成 1 段（与 GUI 选默认 4G 扫小盘的行为一致）
+app3.combo_seg.setCurrentIndex(app3.combo_seg.findText("4G"))
+app3.chk_quick.setChecked(False)
+app3._start_scan()
+assert app3.scan_quick is False
+# 段少格多：1 段广播到全部 256 格
+assert len(app3.seg_cells) == 1, len(app3.seg_cells)
+assert app3.seg_cells[0] == list(range(256)), app3.seg_cells[0][:3]
+t0 = time.time()
+while time.time() - t0 < 60:
+    QApplication.processEvents()
+    if app3.summary is not None and app3.worker is None:
+        break
+    time.sleep(0.05)
+else:
+    raise SystemExit("超时：小盘扫描未在 60s 内结束")
+QApplication.processEvents()
+s3 = app3.summary
+assert s3 and len(s3["segments"]) == 1
+assert s3["n_blocks"] == 8, s3["n_blocks"]
+# 8 个 1M 块，单段广播到全部 256 格：每格 n=8（段的块数，见 _add_seg_stat）
+filled3 = sum(1 for c in app3.cells if c["median"] is not None)
+print("小盘扫描: %d 段 %d 块 | 填充 %d/%d 格 | 耗时 %.1fs"
+      % (len(s3["segments"]), s3["n_blocks"], filled3, len(app3.cells),
+         s3["elapsed_s"]))
+assert filled3 == H.MAP_CELLS, filled3
+assert all(c["n"] == 8 for c in app3.cells), [c["n"] for c in app3.cells[:4]]
+_drain(app3)
+assert all(f == H.COLOR_OK for f in app3._painted), "全部格子应为绿色"
+app3._cancel_timers()
+app3.close()
+print("\nGUI 扫描全链路（快速 + 全段 4 段 + 小盘单段 + 导出）通过")

@@ -19,7 +19,7 @@
 
 说明:
   - PyInstaller 不能交叉编译，所以这里打的是"源码安装包"（安装时在目标
-    机器上建 venv 装 ttkbootstrap），而不是 Windows exe 那样的单文件二进制。
+    机器上建 venv 装 PyQt5），而不是 Windows exe 那样的单文件二进制。
     想要单文件二进制，请在目标 Linux 上运行同一份 build_exe.py（见 README）。
   - 纯 Python 源码，与 CPU 架构无关（x86_64 / arm64 / loongarch 均可，
     .deb 的 Architecture 为 all）。
@@ -59,7 +59,7 @@ RUN_HEADER = """#!/bin/sh
 # HD Doc {version} for Linux —— 自解压安装包
 #
 # 支持: Ubuntu 20.04+ / 银河麒麟桌面 V10+ / openKylin / Deepin / UOS
-#       （rpm 系麒麟服务器 V10 可用本包装 CLI，依赖需自备 fio/python3-tkinter）
+#       （rpm 系麒麟服务器 V10 可用本包装 CLI，依赖需自备 fio/python3-qt5）
 #
 # 用法:
 #   chmod +x {name}.run
@@ -131,8 +131,9 @@ StartupWMClass=HD_Doc
 
 DEB_POSTINST = """#!/bin/sh
 # HD Doc deb 安装后配置（dpkg 传入 configure 时执行）：
-#   1. 创建 venv 并安装 ttkbootstrap（离线机器失败时回退系统 Python，
-#      CLI 模式不依赖 ttkbootstrap，不受影响）
+#   1. 创建 venv 并安装 PyQt5（离线机器失败时回退系统 Python，
+#      CLI 模式不依赖 PyQt5，不受影响；系统已装 python3-pyqt5 时
+#      venv 用 --system-site-packages，直接复用系统 PyQt5）
 #   2. 写 .python_mode 标记 + 安装清单（供手动 uninstall.sh 定位）
 #   3. 刷新图标/桌面数据库（缺工具时静默跳过）
 set -e
@@ -145,7 +146,7 @@ case "$1" in
            && "$PYTHON" -m venv --system-site-packages "$PREFIX/venv" >/dev/null 2>&1; then
             if "$PREFIX/venv/bin/pip" install --quiet --disable-pip-version-check \\
                     -r "$PREFIX/requirements.txt" >/dev/null 2>&1 \\
-                    && "$PREFIX/venv/bin/python" -c 'import ttkbootstrap' >/dev/null 2>&1; then
+                    && "$PREFIX/venv/bin/python" -c 'import PyQt5.QtWidgets' >/dev/null 2>&1; then
                 MODE=venv
             else
                 rm -rf "$PREFIX/venv"
@@ -307,7 +308,7 @@ def _deb_control(version, installed_size):
         "Architecture: all",
         "Maintainer: HD Doc Project <hd-doc@localhost>",
         "Installed-Size: %d" % installed_size,
-        "Depends: python3 (>= 3.8), python3-tk, python3-venv, fio, policykit-1",
+        "Depends: python3 (>= 3.8), python3-pyqt5, python3-venv, fio, policykit-1",
         "Description: Disk health scanner based on fio with block heatmap",
         " HD Doc scans physical disks or image files with fio and renders read",
         " latency / health as a block heatmap. Supports full scan, quick scan",

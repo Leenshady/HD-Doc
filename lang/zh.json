@@ -103,7 +103,7 @@
   "gui.relaunch": "以管理员身份重启",
   "gui.relaunch_linux": "以 root 重启",
   "gui.bs_values": "自动,512K,1M,2M,4M,8M,16M,32M,64M",
-  "gui.seg_values": "整盘一次（最快）,512M,1G,2G,4G,8G,16G,32G,64G",
+  "gui.seg_values": "整盘一次（最快）,64M,128M,256M,512M,1G,2G,4G,8G,16G,32G,64G",
   "gui.sample_values": "1M,2M,4M,8M,16M,32M,64M",
   "gui.map_mode": "热力图:",
   "gui.map_mode_values": "磁盘健康热力图,磁盘读取速度热力图",

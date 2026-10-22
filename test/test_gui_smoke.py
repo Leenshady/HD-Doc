@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
-"""GUI 冒烟测试：用系统 Python（带 tkinter + ttkbootstrap）实例化应用并驱动
-各事件处理器。覆盖：英文默认界面、浅色默认主题、语言切换（原地重建界面，
-不重启进程）、主题切换（实时 theme_use 换色）、关于窗口、事件流、
-完成/错误/快速汇总、横幅替代弹窗。"""
+"""GUI 冒烟测试：用系统 Python（带 PyQt5）实例化应用并驱动各事件处理器。
+覆盖：英文默认界面、浅色默认主题、语言切换（原地重建界面，不重启进程）、
+主题切换（实时换 QSS）、关于窗口、事件流、完成/错误/快速汇总、横幅替代
+弹窗、逐格渲染。
+
+offscreen 平台：QT_QPA_PLATFORM=offscreen，无显示环境（CI/远程）也能跑；
+逻辑与真实窗口完全一致（布局/绘制/定时器都走同一套代码）。
+"""
 import os
 import sys
 import time
-import types
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # 阻止启动时的自动提权弹窗阻塞无人值守测试（见 _startup_admin_check）
 os.environ["HDTUNE_NO_AUTO_ELEVATE"] = "1"
 # 固定英文，保证断言确定（语言切换行为单独验证）
@@ -21,95 +25,110 @@ _LOG_DIR = tempfile.mkdtemp(prefix="HD_Doc_log_")
 os.environ["HD_DOC_LOG_DIR"] = _LOG_DIR
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton
 import HD_Doc_gui as H
 from HD_Doc_core import plan_grid, tr
 
-# 本模块能导入就说明 ttkbootstrap 可用（HD_Doc_gui 顶层 import ttkbootstrap）
-root = H.tk.Tk()
-root.withdraw()
+# 本模块能导入就说明 PyQt5 可用（HD_Doc_gui 顶层 import PyQt5）
+qt_app = QApplication.instance() or QApplication(sys.argv)
 app = H.HDDocApp()
-app.update()          # 等窗口映射/移动请求生效后再断言位置
+app.show()
+QApplication.processEvents()   # 等布局/几何请求生效后再断言
+
+
+def _pe():
+    QApplication.processEvents()
+
 
 # ---- 启动时窗口居中 ----
-_sw, _sh = app.winfo_screenwidth(), app.winfo_screenheight()
-_wx, _wy = app.winfo_x(), app.winfo_y()
-assert 0 <= _wx <= _sw and 0 <= _wy <= _sh, (_wx, _wy, _sw, _sh)
-assert abs(_wx + app.winfo_width() / 2 - _sw / 2) <= 2, \
-    "window should be horizontally centered: x=%d w=%d screen=%d" % (
-        _wx, app.winfo_width(), _sw)
-assert abs(_wy + app.winfo_height() / 2 - _sh / 2) <= 2, \
-    "window should be vertically centered: y=%d h=%d screen=%d" % (
-        _wy, app.winfo_height(), _sh)
-print("Window centered OK: +%d+%d on %dx%d" % (_wx, _wy, _sw, _sh))
+from PyQt5.QtWidgets import QDesktopWidget
+_geo = QDesktopWidget().availableGeometry(app)
+_g = app.geometry()
+assert _g.x() >= 0 and _g.y() >= 0, (_g.x(), _g.y())
+# offscreen 虚拟屏幕可能小于设计尺寸（800x600）：窗口放不下时无居中可言
+# （_center_on_screen 里 max(0, ...) 夹到 0），只校验"不出界"
+if _geo.width() >= _g.width() and _geo.height() >= _g.height():
+    assert _g.x() <= max(0, _geo.width() - _g.width()), (_g.x(), _geo.width())
+    assert _g.y() <= max(0, _geo.height() - _g.height()), (_g.y(), _geo.height())
+    assert abs(_g.x() + _g.width() / 2 - _geo.width() / 2) <= 2, \
+        "window should be horizontally centered: %r geo=%r" % (_g, _geo)
+    assert abs(_g.y() + _g.height() / 2 - _geo.height() / 2) <= 2, \
+        "window should be vertically centered: %r geo=%r" % (_g, _geo)
+    print("Window centered OK: %r on %dx%d" % (_g, _geo.width(), _geo.height()))
+else:
+    print("Window position OK (offscreen screen %dx%d smaller than window %dx%d)"
+          % (_geo.width(), _geo.height(), _g.width(), _g.height()))
 
-app.withdraw()
-app.geometry("1140x820")
-app.update()
-print("App instantiated OK | canvas %dx%d"
-      % (app.canvas_map.winfo_width(), app.canvas_map.winfo_height()))
+app.resize(1140, 820)
+_pe()
+print("App instantiated OK | map %dx%d"
+      % (app.map_widget.width(), app.map_widget.height()))
 
 # ---- 默认英文界面 + 默认浅色主题 ----
-assert "HD Doc" in app.title(), app.title()
-assert app.style.theme_use() == "bootstrap-light", app.style.theme_use()
-admin_txt = app.lbl_admin.cget("text")
+assert "HD Doc" in app.windowTitle(), app.windowTitle()
+_qss = QApplication.instance().styleSheet()
+assert "#f0f0f0" in _qss and "#1f1f1f" in _qss, \
+    "light theme QSS should be applied: %r" % _qss[:120]
+admin_txt = app.lbl_admin.text()
 assert "Permission" in admin_txt, admin_txt
 print("Permission status: %s (is_admin=%s)" % (admin_txt, H.is_admin()))
-assert app.btn_start.cget("text") == "Start scan"
-assert app.combo_bs["values"][0] == "Auto", app.combo_bs["values"]
+assert app.btn_start.text() == "Start scan"
+assert app.combo_bs.itemText(0) == "Auto", \
+    [app.combo_bs.itemText(i) for i in range(app.combo_bs.count())]
 # 分段下拉恢复：默认 4G，可选整盘一次/512M/1G/2G/4G/8G/16G/32G/64G
-assert "Whole disk at once" in app.combo_seg["values"][0], app.combo_seg["values"]
-assert app.var_seg.get() == "4G", app.var_seg.get()
+_vals = [app.combo_seg.itemText(i) for i in range(app.combo_seg.count())]
+assert "Whole disk at once" in _vals[0], _vals
+assert app.combo_seg.currentText() == "4G", app.combo_seg.currentText()
 
 # ---- 热力图双模式（默认健康；可切速度）----
-assert app.combo_map_mode["values"] == ("Disk health", "Read speed"), \
-    app.combo_map_mode["values"]
-assert app.var_map_mode.get() == "Disk health"
+assert [app.combo_map_mode.itemText(i)
+        for i in range(app.combo_map_mode.count())] == \
+    ["Disk health", "Read speed"], app.combo_map_mode.count()
+assert app.combo_map_mode.currentText() == "Disk health"
 assert app.map_mode == H.MAP_MODE_HEALTH
-assert "health" in app.map_frame.cget("text").lower(), app.map_frame.cget("text")
-# 健康模式图例：正常/错误/未扫描可见，"偏慢"隐藏（winfo_manager 空=未 pack）
-assert app._legend_labels[1][0].winfo_manager() == "", \
+assert "health" in app.map_frame.title().lower(), app.map_frame.title()
+# 健康模式图例：正常/错误/未扫描可见，"偏慢"隐藏
+assert app._legend_labels[1][0].isVisible() is False, \
     "slow swatch must be hidden in health mode"
-assert app._legend_labels[0][0].winfo_manager() == "pack"
-assert app._legend_labels[2][0].winfo_manager() == "pack"
-assert app._legend_labels[3][0].winfo_manager() == "pack"
+assert app._legend_labels[0][0].isVisible() is True
+assert app._legend_labels[2][0].isVisible() is True
+assert app._legend_labels[3][0].isVisible() is True
 # 切到速度模式：图例补回"偏慢"，标题换口径
-# （注：测试环境的隐藏 root 与 app 是两个 Tcl 解释器，控件→StringVar
-#  的回写不跨解释器；处理函数读控件下标、断言也按控件值，真实单窗口
-#  应用里两者始终一致）
-app.combo_map_mode.current(H.MAP_MODE_SPEED)
+app.combo_map_mode.setCurrentIndex(H.MAP_MODE_SPEED)
 app._on_map_mode_toggle()
 assert app.map_mode == H.MAP_MODE_SPEED
-assert app.combo_map_mode.get() == "Read speed"
-assert "read speed" in app.map_frame.cget("text").lower()
-assert app._legend_labels[1][0].winfo_manager() == "pack"
+assert app.combo_map_mode.currentText() == "Read speed"
+assert "read speed" in app.map_frame.title().lower()
+assert app._legend_labels[1][0].isVisible() is True
 # 切回健康模式（往返一致）
-app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app.combo_map_mode.setCurrentIndex(H.MAP_MODE_HEALTH)
 app._on_map_mode_toggle()
 assert app.map_mode == H.MAP_MODE_HEALTH
-assert app.combo_map_mode.get() == "Disk health"
-assert app._legend_labels[1][0].winfo_manager() == ""
+assert app.combo_map_mode.currentText() == "Disk health"
+assert app._legend_labels[1][0].isVisible() is False
 # 无扫描数据时切换不报错（cells 空 → 只更新标题/图例）
 assert app.cells == []
 
 # ---- 目标下拉框禁止编辑 ----
-assert str(app.combo_target.cget("state")) == "readonly", \
+assert not app.combo_target.isEditable(), \
     "target dropdown must not be editable"
 
 # ---- 快速扫描控件（复选框默认关、抽样下拉禁用） ----
-assert hasattr(app, "var_quick") and app.var_quick.get() is False
-assert str(app.combo_quick_sample.cget("state")) == "disabled"
-app.var_quick.set(True)
+assert app.chk_quick.isChecked() is False
+assert app.combo_quick_sample.isEnabled() is False
+app.chk_quick.setChecked(True)
 app._on_quick_toggle()
-assert str(app.combo_quick_sample.cget("state")) == "readonly"
-app.var_quick.set(False)
+assert app.combo_quick_sample.isEnabled() is True
+app.chk_quick.setChecked(False)
 app._on_quick_toggle()
-assert str(app.combo_quick_sample.cget("state")) == "disabled"
+assert app.combo_quick_sample.isEnabled() is False
 print("Quick-scan controls OK (sample dropdown enabled only when checked)")
 
-# ---- 热力图（固定格数：UI 一致性；withdrawn 窗口布局尺寸为 1x1，
-#      monkeypatch 出真实画布尺寸） ----
-app.canvas_map.winfo_width = lambda: 1100
-app.canvas_map.winfo_height = lambda: 700
+# ---- 热力图（固定格数：UI 一致性）----
+app.map_widget.resize(1100, 700)     # offscreen 下显式给地图部件尺寸
+_pe()
 N_SEG = 19
 BS = 4 << 20
 SEG_SIZE = 4 << 20
@@ -123,7 +142,6 @@ print("Heatmap %d cells (%d cols x %d rows, pitch=%.1fpx, fixed count) OK"
 # 固定格数：段多段少都是 MAP_CELLS 格、同一套布局（UI 一致性——
 # 换盘/换分段方式不再改变热力图的格数与形状）
 assert len(app.cells) == H.MAP_CELLS == 256, len(app.cells)
-assert len(app.cell_items) == 256
 assert app.grid_cols * app.grid_rows >= 256
 assert app.grid_ox + app.grid_cols * app.cell_pitch <= 1100 + 1e-6
 assert app.grid_oy + app.grid_rows * app.cell_pitch <= 700 + 1e-6
@@ -153,8 +171,8 @@ app._handle_event({"type": "log", "stream": "info", "line": "test log"})
 app._handle_event({"type": "log", "stream": "warn", "line": "test warn"})
 app._handle_event({"type": "log", "stream": "stderr", "line": "fio: test"})
 app._update_status(50.0, 1500000000, 26, 0)
-app.update()
-print("Event flow OK | hover: %r" % app.lbl_hover.cget("text"))
+_pe()
+print("Event flow OK | hover: %r" % app.lbl_hover.text())
 # 块 5（偏移 20MB）→ 格 67；段 18 覆盖末尾诸格（格 255 拿到段 18 的中位数）
 print("Cell 0: median=%.1f n=%d | cell67 errors=%d | cell255 median=%.1f"
       % (app.cells[0]["median"], app.cells[0]["n"],
@@ -168,11 +186,9 @@ assert app.cells[13]["median"] == 2200.0, app.cells[13]["median"]
 # ---- 悬停（行优先：最后一个格子；坐标按 pitch 与居中偏移反算到格内） ----
 last = len(app.cells) - 1
 r, c = divmod(last, app.grid_cols)
-ev = types.SimpleNamespace(
-    x=int(app.grid_ox + c * app.cell_pitch + app.cell_pitch / 2),
-    y=int(app.grid_oy + r * app.cell_pitch + app.cell_pitch / 2))
-app._on_canvas_motion(ev)
-hover = app.lbl_hover.cget("text")
+app._on_map_hover(int(app.grid_ox + c * app.cell_pitch + app.cell_pitch / 2),
+                  int(app.grid_oy + r * app.cell_pitch + app.cell_pitch / 2))
+hover = app.lbl_hover.text()
 print("Hover info: %r" % hover)
 assert hover, "hover info should not be empty"
 assert "Cell #256/256" in hover and "offset" in hover, \
@@ -202,17 +218,17 @@ summary = {
 }
 # 桩掉所有弹窗：完成路径不应弹任何窗（结果只进横幅/汇总页）
 popped = []
-H.Messagebox.show_warning = lambda *a, **k: popped.append(("warning", a))
-H.Messagebox.show_info = lambda *a, **k: popped.append(("info", a))
-H.Messagebox.show_error = lambda *a, **k: popped.append(("error", a))
-H.Messagebox.yesno = lambda *a, **k: popped.append(("yesno", a))
+H.QMessageBox.warning = lambda *a, **k: popped.append(("warning", a))
+H.QMessageBox.information = lambda *a, **k: popped.append(("info", a))
+H.QMessageBox.critical = lambda *a, **k: popped.append(("error", a))
+H.QMessageBox.question = lambda *a, **k: popped.append(("yesno", a))
 app._on_finished(summary)
-app.update()
-print("Finish event OK | summary %d chars" % len(app.txt_summary.get("1.0", "end")))
-print("Export button state: %s" % app.btn_export.cget("state"))
+_pe()
+print("Finish event OK | summary %d chars" % len(app.txt_summary.toPlainText()))
+print("Export button enabled: %s" % app.btn_export.isEnabled())
 assert not popped, "clean scan must not pop any dialog: %r" % (popped,)
-assert "Scan complete" in app.lbl_banner.cget("text"), app.lbl_banner.cget("text")
-assert "Block size" in app.txt_summary.get("1.0", "end")
+assert "Scan complete" in app.lbl_banner.text(), app.lbl_banner.text()
+assert "Block size" in app.txt_summary.toPlainText()
 
 # ---- 错误场景汇总（错误展示路径 + 错误块按字节偏移映射到格 + error 级横幅） ----
 summary2 = dict(summary)
@@ -222,11 +238,11 @@ summary2["last_errno"] = 5
 summary2["last_errno_name"] = H.errno_name(5)
 summary2["unscanned_bytes"] = 8388608
 app._on_finished(summary2)
-app.update()
+_pe()
 print("Error scenario OK | error tree rows: %d | cell67 errors=%d"
-      % (len(app.tree_err.get_children()), app.cells[67]["errors"]))
-assert len(app.tree_err.get_children()) == 1
-assert "error blocks" in app.lbl_banner.cget("text")
+      % (app.tree_err.topLevelItemCount(), app.cells[67]["errors"]))
+assert app.tree_err.topLevelItemCount() == 1
+assert "error blocks" in app.lbl_banner.text()
 assert not popped, "error result must use the in-app banner, not dialogs: %r" % (popped,)
 
 # ---- 快速扫描汇总（覆盖率行） ----
@@ -239,8 +255,8 @@ summary3["segments"] = [{
     "bw_bytes": 1400000000} for i in range(4)]
 summary3["error_blocks"] = {}
 app._on_finished(summary3)
-app.update()
-txt = app.txt_summary.get("1.0", "end")
+_pe()
+txt = app.txt_summary.toPlainText()
 assert "quick scan" in txt and "% of capacity" in txt, \
     "quick-scan summary should contain the coverage line"
 print("Quick-scan summary OK (with coverage line)")
@@ -252,39 +268,41 @@ import HD_Doc_core as core
 # （旧实现靠 execv 重启重载，本条验证结构化日志机制）
 app._log("info", "gui.log.admin_ok")
 
+
 class _LiveWorker:
     def is_alive(self):
         return True
+
 
 # 扫描中切换：不再禁止——重建只换控件，不动扫描线程/fio 子进程
 live = _LiveWorker()
 app.summary = None                      # 模拟"扫描进行中、尚无结果"
 app._set_state("gui.state_scanning")    # 与 _start_scan 同一入口
 app.worker = live
-app.combo_map_mode.current(H.MAP_MODE_SPEED)   # 重建前切到速度模式
+app.combo_map_mode.setCurrentIndex(H.MAP_MODE_SPEED)   # 重建前切到速度模式
 app._on_map_mode_toggle()
 app._set_language("zh")
-app.update()
+_pe()
 assert core.get_language() == "zh"
 assert core.load_config().get("language") == "zh", \
     "choice must persist to config"
-assert app.btn_start.cget("text") == "▶ 开始扫描", app.btn_start.cget("text")
+assert app.btn_start.text() == "▶ 开始扫描", app.btn_start.text()
 # 扫描状态跨重建保留（旧实现重启后全丢，才被迫禁止扫描中切换）
-assert str(app.btn_start.cget("state")) == "disabled", "start stays disabled"
-assert str(app.btn_stop.cget("state")) == "normal", "stop stays enabled"
+assert app.btn_start.isEnabled() is False, "start stays disabled"
+assert app.btn_stop.isEnabled() is True, "stop stays enabled"
 assert app.worker is live, "rebuild must not touch the scan thread"
-assert app.lbl_state.cget("text") == "扫描中…", app.lbl_state.cget("text")
+assert app.lbl_state.text() == "扫描中…", app.lbl_state.text()
 # 热力图模式跨重建保留（快照下标恢复；格子颜色由地图块按新模式重绘）
 assert app.map_mode == H.MAP_MODE_SPEED, "heatmap mode must survive rebuild"
-assert app.combo_map_mode.get() == "磁盘读取速度热力图", \
-    app.combo_map_mode.get()
+assert app.combo_map_mode.currentText() == "磁盘读取速度热力图", \
+    app.combo_map_mode.currentText()
 # 热力图数据跨重建保留（格数固定 256；错误块经 live 事件与汇总去重后
 # cell67 errors=1，不重复计数）
 assert len(app.cells) == H.MAP_CELLS, len(app.cells)
 assert app.cells[67]["errors"] == 1
 assert app.cells[255]["median"] == 2200.0 + 18 * 10
 # 日志：可翻译条目按新语言重放；fio 原始输出原样保留（不过 i18n）
-log_zh = app.txt_log.get("1.0", "end")
+log_zh = app.txt_log.toPlainText()
 assert "管理员" in log_zh, log_zh
 assert "fio: test" in log_zh, "raw fio output must survive verbatim"
 app.worker = None
@@ -293,129 +311,100 @@ print("Language switch during scan OK (in-place rebuild; scan state kept)")
 # 正常切换（带回已完成的结果）：结果区按新语言重放，选择持久化
 app.summary = summary                   # 还原一轮已完成扫描
 app._set_language("en")                 # zh → en 反向切换
-app.update()
+_pe()
 assert core.get_language() == "en"
-assert app.btn_start.cget("text") == "Start scan"
+assert app.btn_start.text() == "Start scan"
 assert app.map_mode == H.MAP_MODE_SPEED, "mode survives zh→en rebuild too"
-assert app.combo_map_mode.get() == "Read speed"
-assert "Block size" in app.txt_summary.get("1.0", "end"), \
+assert app.combo_map_mode.currentText() == "Read speed"
+assert "Block size" in app.txt_summary.toPlainText(), \
     "summary page must be re-rendered in the new language"
-assert "Scan complete" in app.lbl_banner.cget("text"), \
+assert "Scan complete" in app.lbl_banner.text(), \
     "banner must be replayed in the new language"
-assert app.nb.select() == str(app.txt_summary), "selected tab must be kept"
+assert app.nb.currentWidget() is app.txt_summary, "selected tab must be kept"
 assert len(app.cells) == H.MAP_CELLS and app.cells[67]["errors"] == 1
 app._set_language("en")
-assert app.btn_start.cget("text") == "Start scan", "same language is a no-op"
+assert app.btn_start.text() == "Start scan", "same language is a no-op"
 # 还原空闲态与默认模式（后续用例不关心，保持界面自洽）
-app.combo_map_mode.current(H.MAP_MODE_HEALTH)
+app.combo_map_mode.setCurrentIndex(H.MAP_MODE_HEALTH)
 app._on_map_mode_toggle()
-app.btn_start.config(state="normal")
-app.btn_stop.config(state="disabled")
+app.btn_start.setEnabled(True)
+app.btn_stop.setEnabled(False)
 print("Language switch OK (in-place rebuild; results/log/banner replayed)")
 
-# ---- 主题切换：实时 theme_use（不重启进程，UI 不重建）----
+# ---- 主题切换：实时换 QSS（不重启进程，UI 不重建）----
 app.worker = _LiveWorker()              # 扫描中同样允许切换
 app._set_theme("bootstrap-dark")
-app.update()
+_pe()
 assert core.get_theme() == "bootstrap-dark"
 assert core.load_config().get("theme") == "bootstrap-dark", \
     "theme choice must persist to config"
-assert app.style.theme_use() == "bootstrap-dark"
-# 原生 tk 控件同步到新主题色板（ttk 控件由主题引擎自动换色）
-assert str(app.canvas_map.cget("bg")).lower() == app.style.colors.bg.lower()
+assert "#2b2d30" in QApplication.instance().styleSheet(), \
+    "dark theme QSS should be applied"
+# 图例色块边框同步到新主题色板（填充是语义色，不随主题切换）
 for swatch in app._legend_swatches:
-    assert str(swatch.cget("highlightbackground")).lower() \
-        == app.style.colors.border.lower()
+    assert "#5a5d5f" in swatch.styleSheet(), swatch.styleSheet()
 # 主题切换不重建界面：控件原样（英文文案还在即证明未重建）
-assert app.btn_start.cget("text") == "Start scan"
+assert app.btn_start.text() == "Start scan"
 assert app.worker is not None
 app.worker = None
 app._set_theme("bootstrap-dark")        # 同主题不重复动作
-assert app.style.theme_use() == "bootstrap-dark"
+assert "#2b2d30" in QApplication.instance().styleSheet()
 # 切回浅色，避免影响后续用例
 app._set_theme("bootstrap-light")
-app.update()
-assert app.style.theme_use() == "bootstrap-light"
-assert str(app.canvas_map.cget("bg")).lower() == app.style.colors.bg.lower()
-print("Theme switch OK (live theme_use; native widgets follow)")
+_pe()
+assert "#f0f0f0" in QApplication.instance().styleSheet()
+for swatch in app._legend_swatches:
+    assert "#c8c8c8" in swatch.styleSheet(), swatch.styleSheet()
+print("Theme switch OK (live QSS swap; legend borders follow)")
 
-# ---- 关于窗口（一行简介，无作者行，图标限制大小，标题栏图标走 iconphoto） ----
-# 记录 _show_about 对 iconphoto 的调用：标题栏图标必须走 iconphoto 且用
-# 缩放版（iconbitmap 渲染不了 PNG 压缩的 .ico → 标题栏图标空白）
-_iconphoto_calls = []
-_orig_iconphoto = H.tk.Wm.iconphoto
-
-
-def _spy_iconphoto(self, default=False, *args):
-    _iconphoto_calls.append((default, args))
-    return _orig_iconphoto(self, default, *args)
-
-
-H.tk.Wm.iconphoto = _spy_iconphoto
+# ---- 关于窗口（一行简介，无作者行，图标限制大小，模态+聚焦+Esc 关闭） ----
+# exec_ 会阻塞：用记录器替换，验证"会以模态打开"而不真的阻塞
+_about_dialogs = []
+_real_exec = H.AboutDialog.exec_
+H.AboutDialog.exec_ = lambda self: (_about_dialogs.append(self),
+                                    QMessageBox.Yes)[1]
 try:
     app._show_about()
-    app.update()
+    _pe()
 finally:
-    H.tk.Wm.iconphoto = _orig_iconphoto
-about_win = [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"]
-assert about_win, "About window should open"
-about_labels = [w for w in about_win[0].winfo_children()[0].winfo_children()
-                if w.winfo_class() in ("Label", "TLabel")]
-assert about_labels, "About should show a one-line label"
-about_txt = about_labels[0].cget("text")
-assert "HD Doc" in about_txt, about_txt
-assert "Author" not in about_txt and "作者" not in about_txt, about_txt
-assert "\n" not in about_txt, "About must be a single line: %r" % about_txt
-# 弹窗内图标必须被 _bounded_photo 限制大小（原图 1248px 会撑爆对话框）
-def _descendants(w):
-    for c in w.winfo_children():
-        yield c
-        yield from _descendants(c)
-about_imgs = []
-for w in _descendants(about_win[0]):
-    if w.winfo_class() not in ("Label", "TLabel"):
-        continue
-    v = w.cget("image")          # 带图的标签返回 ('pyimageN',)，无图返回 ''
-    if isinstance(v, (tuple, list)):
-        v = v[0] if v else ""
-    if v:
-        about_imgs.append(v)
-assert about_imgs, "About dialog should show the app icon"
-assert about_imgs[0] == str(app._about_icon), \
-    "about dialog must show the bounded icon copy, not the full-size one: %r" % (
-        about_imgs,)
-assert max(app._about_icon.width(), app._about_icon.height()) <= H.ABOUT_ICON_PX, \
+    H.AboutDialog.exec_ = _real_exec
+assert _about_dialogs, "About dialog should open"
+dlg = _about_dialogs[0]
+labels = dlg.findChildren(QLabel)
+txts = [l.text() for l in labels if l.text()]
+assert any("HD Doc" in t for t in txts), txts
+one_line = [t for t in txts if "HD Doc" in t][0]
+assert "Author" not in one_line and "作者" not in one_line, one_line
+assert "\n" not in one_line, "About must be a single line: %r" % one_line
+# 弹窗内图标必须被 _bounded_pixmap 限制大小（原图 1248px 会撑爆对话框）
+# （PyQt5 的 QLabel.pixmap() 无图时返回 None，不是 null QPixmap）
+_icon_labels = [l for l in labels
+                if l.pixmap() is not None and not l.pixmap().isNull()]
+assert _icon_labels, "About dialog should show the app icon"
+_pm = _icon_labels[0].pixmap()
+assert max(_pm.width(), _pm.height()) <= H.ABOUT_ICON_PX, \
     "about icon must be bounded to %dpx: got %dx%d" % (
-        H.ABOUT_ICON_PX, app._about_icon.width(), app._about_icon.height())
-# 标题栏图标：必须通过 iconphoto 设置（iconbitmap 对 PNG 压缩的 .ico 静默
-# 无效果，标题栏图标就是空白），且必须用 48px 缩放版而非 1248px 原图
-assert any(a and a[0] is app._about_icon for _d, a in _iconphoto_calls), \
-    "About dialog must set its title-bar icon via iconphoto (bounded copy): %r" % (
-        _iconphoto_calls,)
+        H.ABOUT_ICON_PX, _pm.width(), _pm.height())
+# 主窗口图标同样来自 PNG（Qt 直接渲染，标题栏/任务栏都归它管）
+assert not app.windowIcon().isNull(), "window icon should be set"
+# 弹窗按钮必须 i18n（本测试固定英文 → "OK"）
+btns = dlg.findChildren(QPushButton)
+assert btns, "About dialog should have an OK button"
+assert btns[0].text() == tr("gui.about.ok"), \
+    "OK button must be localized: %r" % (btns[0].text(),)
+assert dlg.isModal(), "About dialog must be modal"
+# Escape 关闭（keyPressEvent 映射到 reject）
+dlg.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+assert dlg.result() == H.AboutDialog.Rejected, "Escape must close the dialog"
 print("About window OK (one-line intro, no author line, icon %dx%d <= %dpx, "
-      "title-bar icon via iconphoto)"
-      % (app._about_icon.width(), app._about_icon.height(), H.ABOUT_ICON_PX))
-# 弹窗按钮必须 i18n（本测试固定英文 → "OK"）；弹窗必须真正获焦：
-# 模态 grab 落在弹窗上、键盘焦点落在"确定"按钮（回车即关）、Escape 也能关
-about_btns = [w for w in _descendants(about_win[0])
-              if w.winfo_class() == "TButton"]
-assert about_btns, "About dialog should have an OK button"
-assert about_btns[0].cget("text") == tr("gui.about.ok"), \
-    "OK button must be localized: %r" % (about_btns[0].cget("text"),)
-assert about_win[0].grab_current() is about_win[0], \
-    "About dialog must take the modal grab"
-assert app.focus_get() is about_btns[0], \
-    "About dialog must focus its OK button: focus=%r" % (app.focus_get(),)
-about_win[0].event_generate("<Escape>")
-app.update()
-assert not [w for w in app.winfo_children() if w.winfo_class() == "Toplevel"], \
-    "Escape must close the About dialog"
-print("About focus/i18n OK (grab on dialog, focus on OK button, Escape closes)")
+      "modal + Escape closes)"
+      % (_pm.width(), _pm.height(), H.ABOUT_ICON_PX))
 
 # ---- 目标下拉框：只显示 型号+容量，路径走 _target_paths 映射 ----
 app._refresh_drives()
-app.update()
-vals = list(app.combo_target["values"])
+_pe()
+vals = [app.combo_target.itemText(i)
+        for i in range(app.combo_target.count())]
 if vals:   # 本机枚举到物理盘时才断言（无盘/权限受限时空列表也合法）
     for v in vals:
         assert "PhysicalDrive" not in v, \
@@ -423,7 +412,6 @@ if vals:   # 本机枚举到物理盘时才断言（无盘/权限受限时空列
     assert app._target_paths, "label→path mapping must be populated"
     assert all(p.startswith("\\\\.\\PhysicalDrive") or p.lower().startswith("//./")
                for p in app._target_paths.values()), app._target_paths
-    assert app.var_target.get() in app._target_paths or not app.var_target.get()
 print("Drive labels OK (model + capacity only, %d drives, mapping=%d)"
       % (len(vals), len(app._target_paths)))
 
@@ -450,8 +438,9 @@ try:
             {"index": 1, "path": "/dev/nvme0n1", "size": 500107862016,
              "model": "", "bus": "nvme"}]):
         app._refresh_drives()
-        app.update()
-        vals = list(app.combo_target["values"])
+        _pe()
+        vals = [app.combo_target.itemText(i)
+                for i in range(app.combo_target.count())]
     assert len(vals) == 2, vals
     assert vals[0].startswith("WDC WD10EZEX"), vals
     assert vals[1].startswith("nvme0n1") and "Disk" not in vals[1], vals
@@ -459,20 +448,20 @@ try:
     print("Linux drive labels OK (model, or kernel name fallback): %r" % (vals,))
 
     # ---- Linux 提权场景 1：pkexec 很快退出（授权取消/失败）→ 窗口保留 ----
-    # 旧版 after(200) 无条件退出：授权被取消时窗口直接消失且无提示=闪退
+    # 旧版无条件 200ms 后退出：授权被取消时窗口直接消失且无提示=闪退
     with _mock.patch.object(H.core, "pkexec_gui_spawn",
                             return_value=(_FakePopen(126), None)):
         app._relaunch_elevated()
-    time.sleep(0.25)          # 等 after(150, _poll_pkexec) 到期
-    app.update()
-    assert app.winfo_exists(), "pkexec 失败时窗口必须保留（不能闪退）"
+    time.sleep(0.25)          # 等 150ms 轮询定时器到期
+    _pe()
+    assert app.isVisible(), "pkexec 失败时窗口必须保留（不能闪退）"
     assert app._pkexec_popen is None
-    banner = app.lbl_banner.cget("text")
+    banner = app.lbl_banner.text()
     assert "126" in banner and "Elevation" in banner, banner
     print("Elevation cancelled OK (window kept, banner shows exit 126)")
 
     # ---- 场景 2：pkexec 存活（授权进行中）→ 轮询期满退出本窗口 ----
-    # ttkbootstrap 只允许单根窗口，不能新建第二个 App：用记录器替换
+    # Qt 只允许一个 QApplication 实例、窗口可建多个：用记录器替换
     # _exit_now（验证"会退出"而不真销毁）
     exited = []
     _real_exit_now = app._exit_now
@@ -482,9 +471,9 @@ try:
         app._relaunch_elevated()
     app._pkexec_polls = 1     # 只轮一次即移交（不必真等 3 秒）
     time.sleep(0.25)
-    app.update()
+    _pe()
     assert exited, "授权进行中应在轮询期满后退出本窗口（移交提权实例）"
-    assert "Waiting for authorization" in app.lbl_banner.cget("text")
+    assert "Waiting for authorization" in app.lbl_banner.text()
     app._exit_now = _real_exit_now
     print("Elevation handover OK (window exits once authorization is up)")
 
@@ -492,9 +481,9 @@ try:
     with _mock.patch.object(H.core, "pkexec_gui_spawn",
                             return_value=(None, "pkexec not found")):
         app._relaunch_elevated()
-    app.update()
-    assert app.winfo_exists()
-    assert "pkexec not found" in app.lbl_banner.cget("text")
+    _pe()
+    assert app.isVisible()
+    assert "pkexec not found" in app.lbl_banner.text()
     print("No-pkexec OK (banner error, window kept)")
 
     # ---- 场景 4：ensure_admin_at_startup 在 Linux 也发起提权 ----
@@ -522,40 +511,45 @@ try:
 finally:
     H.IS_WIN = _saved_iswin
     app._refresh_drives()
-    app.update()
+    _pe()
 
 # ---- 日志自动滚动到底部 ----
-app.txt_log.delete("1.0", "end")
+app.txt_log.clear()
 for i in range(120):
     app._log_line("info", "scroll probe line %d" % i)
-app.update()
-_y0, _y1 = app.txt_log.yview()
-assert _y1 >= 0.999, "log should stay scrolled to the last line: yview=%r" % ((_y0, _y1),)
-print("Log auto-scroll OK (120 lines, yview bottom=%.3f)" % _y1)
+_pe()
+_bar = app.txt_log.verticalScrollBar()
+assert _bar.maximum() > 0, "120 lines should overflow the log view"
+assert _bar.value() == _bar.maximum(), \
+    "log should stay scrolled to the last line: %r/%r" % (
+        _bar.value(), _bar.maximum())
+print("Log auto-scroll OK (120 lines, scrollbar %d/%d)"
+      % (_bar.value(), _bar.maximum()))
 
-# ---- 程序图标（标题栏 ico + 任务栏 png） ----
-assert app._icon_img is not None, "window icon (img/HD_Doc.png) should be loaded"
-print("Window icon OK (iconphoto set)")
+# ---- 程序图标（标题栏 + 任务栏，PNG 经 setWindowIcon） ----
+assert not app.windowIcon().isNull(), \
+    "window icon (img/HD_Doc.png) should be loaded"
+print("Window icon OK (setWindowIcon)")
 
 # ---- 失败路径（不弹窗，走横幅） ----
 popped.clear()
 app._on_failed("test failure message")
-app.update()
+_pe()
 assert not popped, "failure must use the in-app banner, not dialogs: %r" % (popped,)
-assert "test failure message" in app.lbl_banner.cget("text")
+assert "test failure message" in app.lbl_banner.text()
 
-# ---- Tk 回调异常必须落运行日志（默认只打印 stderr，打包版不可见） ----
-app.after(5, lambda: 1 / 0)
-time.sleep(0.15)          # 等定时器到期：update() 只处理已就绪的事件
-app.update()
-app.update()
+# ---- Qt 回调异常必须落运行日志（默认只打印 stderr，打包版不可见） ----
+from PyQt5.QtCore import QTimer
+QTimer.singleShot(5, lambda: 1 / 0)
+time.sleep(0.15)          # 等定时器到期
+_pe()
 
 # ---- 运行日志：单文件，含启动/扫描结果/失败/回调异常 ----
 _log_file = os.path.join(_LOG_DIR, "HD_Doc.log")
 assert os.path.isfile(_log_file), "run log should exist at %s" % _log_file
 _log_txt = open(_log_file, encoding="utf-8").read()
 for _needle in ("gui: start", "scan: finished", "scan: failed",
-                "tk callback exception", "ZeroDivisionError"):
+                "qt callback exception", "ZeroDivisionError"):
     assert _needle in _log_txt, "run log should contain %r:\n%s" % (
         _needle, _log_txt[-800:])
 assert os.listdir(_LOG_DIR) == ["HD_Doc.log"], \
@@ -570,23 +564,16 @@ for i in range(5):
     app.cells[i]["median"] = 1000.0
     app.cells[i]["n"] = 1
 app.dirty.update(range(5))
-_fills = lambda: [app.canvas_map.itemcget(it, "fill")
-                  for it in app.cell_items[:5]]
-_before = _fills()
-assert all(f == H.COLOR_PENDING for f in _before), _before
 app._flush_cells(force=True)          # 第一拍：只点亮第 1 格
-_after1 = _fills()
-assert [i for i in range(5) if _before[i] != _after1[i]] == [0], _after1
+assert [i for i in range(5) if app._painted[i]] == [0], app._painted[:5]
 app._flush_cells(force=True)          # 第二拍：才点亮第 2 格（索引顺序）
-_after2 = _fills()
-assert [i for i in range(5) if _after1[i] != _after2[i]] == [1], _after2
+assert [i for i in range(5) if app._painted[i]] == [0, 1], app._painted[:5]
 for _ in range(3):                    # 剩余格子逐拍排干
     app._flush_cells(force=True)
 assert not app.dirty, "待渲染格子应已排干"
-assert all(f == H.COLOR_OK for f in _fills()), _fills()   # 健康模式无错误→绿
+assert all(f == H.COLOR_OK for f in app._painted[:5]), app._painted[:5]
 print("逐格渲染 OK：每次只亮一格，按索引顺序逐拍点亮")
 
-app.destroy()
-root.destroy()
+app.close()
 shutil.rmtree(_LOG_DIR, ignore_errors=True)
 print("\nGUI smoke test: all passed")

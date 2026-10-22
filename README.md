@@ -31,8 +31,10 @@ Runs on Windows (admin rights required for physical disks) and Linux.
   disk collapses into a single region
 - On-demand reports: nothing is saved unless you export (segments.csv,
   errors.csv, summary.txt)
-- GUI (ttkbootstrap, light/dark themes) and CLI from the same code base;
-  GUI is bilingual (English default, Chinese switchable, choice remembered)
+- GUI (PyQt5, light/dark themes) and CLI from the same code base;
+  GUI is bilingual (English default, Chinese switchable, choice remembered).
+  PyQt5 draws the whole interface itself, so the GUI looks identical on
+  Windows, Ubuntu and Kylin and scales natively on HiDPI screens
 - Read-only by design: no writes to the target at any point
 
 ## Usage
@@ -89,11 +91,14 @@ hd-doc                              # launch any time (or search "HD Doc" in the
 From source:
 
 ```bash
-# 1. Install dependencies: tkinter (GUI) + fio (IO engine)
+# 1. Install dependencies: PyQt5 (GUI) + fio (IO engine)
 sudo apt update
-sudo apt install python3-tk fio
+sudo apt install python3-pyqt5 fio
 
-# 2. Install ttkbootstrap (a venv is recommended over system Python)
+# 2. (Optional) a venv keeps things tidy; system Python works too.
+#    Kylin V10 / Ubuntu 20.04 ship python3-pyqt5 in their repos;
+#    PyQt6 has no distro package, so PyQt5 is the version we target.
+#    ttkbootstrap is gone — the GUI now draws itself with PyQt5.
 python3 -m venv ~/.venv/hddoc && ~/.venv/hddoc/bin/pip install -r requirements.txt
 
 # 3. Start (root is required for physical disks; not for image files)
@@ -148,7 +153,7 @@ Every run appends its key events to a single log file — `HD_Doc.log`
 next to the config (`%APPDATA%\HD_Doc\HD_Doc.log` on Windows,
 `~/.config/HD_Doc/` elsewhere): startup, scan start with its full
 parameters, the result summary, report export, language/theme changes,
-and any exception with its traceback (including uncaught Tk callback
+and any exception with its traceback (including uncaught Qt callback
 exceptions, which otherwise only reach stderr and are invisible in the
 windowed build). Example:
 
@@ -179,15 +184,15 @@ script runs on (PyInstaller does not cross-compile):
 
 | Platform | File | fio | Size | Use when |
 |----------|------|-----|------|----------|
-| Windows | `HD_Doc.exe` | bundled | ~31 MB | distributing to machines without fio |
-| Windows | `HD_Doc_NoFio.exe` | not bundled | ~29 MB | fio is already installed, or you pass `--fio PATH` |
-| Linux | `HD_Doc` | bundled (needs fio on the build machine) | ~35 MB | run on Ubuntu without a Python environment |
-| Linux | `HD_Doc_NoFio` | not bundled | ~33 MB | fio is already installed, or you pass `--fio PATH` |
+| Windows | `HD_Doc.exe` | bundled | ~65 MB | distributing to machines without fio |
+| Windows | `HD_Doc_NoFio.exe` | not bundled | ~63 MB | fio is already installed, or you pass `--fio PATH` |
+| Linux | `HD_Doc` | bundled (needs fio on the build machine) | ~62 MB | run on Ubuntu without a Python environment |
+| Linux | `HD_Doc_NoFio` | not bundled | ~60 MB | fio is already installed, or you pass `--fio PATH` |
 
 Both bundle the `lang/` files and the `img/` icon; runtime behavior is
 identical. `--variant fio` / `--variant nofio` builds just one,
-`--onedir` switches to directory mode. Requires a Python with tkinter
-and PyInstaller, plus `pip install ttkbootstrap` (see
+`--onedir` switches to directory mode. Requires a Python with PyQt5
+(`--collect-all PyQt5` bundles the Qt libs) and PyInstaller (see
 `requirements.txt`). `--version` reports where fio comes from
 (`bundled` / `not bundled`). A Linux build still needs root for physical
 disks: `sudo ./dist/HD_Doc`.
@@ -211,7 +216,7 @@ Builds on **any machine** (Windows included) and puts the results in
 Since PyInstaller cannot cross-compile, these are **source install
 packages** (pure Python, architecture independent — x86_64, arm64 and
 loongarch alike): on the target machine they check dependencies, create
-a venv, install ttkbootstrap and register the menu entry. Nothing needs
+a venv, install PyQt5 and register the menu entry. Nothing needs
 to be prepared on the target machine.
 
 ### Galaxy Kylin (银河麒麟)
@@ -236,13 +241,13 @@ sudo ./HD_Doc-1.0/uninstall.sh               # uninstall
 
 **Kylin Advanced Server V10 (rpm based, no GUI, CLI only):** use the
 `.run` or `.tar.gz`; when `install.sh` finds no apt it switches to
-dnf/yum automatically (`fio`, `python3-tkinter`), then run
+dnf/yum automatically (`fio`, `python3-qt5`), then run
 `hd-doc --cli --target /dev/sda`.
 
 What the installer does:
 
 1. Identifies the distro (`/etc/os-release`; Kylin/openKylin get their
-   own note), checks `python3 >= 3.8`, `tkinter` and `fio`; missing
+   own note), checks `python3 >= 3.8`, PyQt5 and `fio`; missing
    pieces are installed via apt (deb based) or dnf/yum (rpm based)
    after a prompt (`-y` skips the prompt, `--no-apt` never touches a
    package manager, `--no-fio` skips fio)
@@ -295,13 +300,13 @@ The fio-based suites need `fio` on the machine (on Windows
 HD_Doc_core.py  business logic: elevation, segments, fio engine, reports
                 (no UI dependency; loads lang/*.json)
 HD_Doc_cli.py   command-line front end (English only)
-HD_Doc_gui.py   ttkbootstrap GUI (bilingual, light/dark theme)
+HD_Doc_gui.py   PyQt5 GUI (bilingual, light/dark theme, self-drawn widgets)
 HD_Doc.py       entry point: dispatches to CLI or GUI
 build_exe.py    PyInstaller packaging (Windows/Linux single-file executables)
 build_linux_pkg.py  Linux install package builder (.deb native + .run + .tar.gz)
 make_icon.py    app icon generation (PIL: 1024 master + hicolor set + multi-res .ico)
 packaging/linux/    installer scripts (install.sh / uninstall.sh) and package validator
-requirements.txt  runtime dependencies (ttkbootstrap, for the GUI)
+requirements.txt  runtime dependencies (PyQt5, for the GUI)
 lang/           interface strings (en.json, zh.json)
 img/            program icon (HD_Doc.ico, HD_Doc.png)
 test/           test suites (python test/test_units.py, ...)

@@ -335,7 +335,7 @@ def main():
                 check("Version=%s" % ver, fields.get("Version") == ver,
                       fields.get("Version"))
                 dep = fields.get("Depends", "")
-                for p in ("python3", "python3-tk", "python3-venv", "fio",
+                for p in ("python3", "python3-pyqt5", "python3-venv", "fio",
                           "policykit-1"):
                     check("Depends 含 %s" % p, p in dep, dep)
                 check("Installed-Size 为正整数",
