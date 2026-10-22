@@ -17,9 +17,10 @@
   缩放自动重排；快速扫描按区域跨度整区点亮（区头抽样代表整区，悬停注明
   抽样量与区域跨度），不会留下未抽样的灰格
 - 错误块列表，含 errno 含义解释
-- 快速扫描：每区只读开头样本，类 HD Tune Quick Scan——同样按固定 256 格
-  布点（一区对应一格，区域数不随容量漂移；小盘上样本按区域跨度截断，
-  保持"每格一个样本"）
+- 快速扫描：每区只读开头样本，类 HD Tune Quick Scan——与全段扫描共用同一套
+  分段设置（默认 4G）：按分段大小把磁盘切成若干区域，每区只读开头 16MB 样本，
+  段数=⌈容量/分段大小⌉（1TB 盘 4G → 233 区）；"整盘一次"（未指定分段大小）时
+  按上限均分布点；分段超过容量时合成单区
 - 按需导出报告：不导出就不落盘（segments.csv / errors.csv / summary.txt）
 - GUI（ttkbootstrap，浅色/深色主题）与 CLI 同一套代码；GUI 支持中英双语
   （默认英文，可切中文，记住选择）
@@ -58,13 +59,13 @@ python HD_Doc.py --cli --target \\.\PhysicalDrive1 --export reports
 `--export [DIR]` 会把报告写入 `DIR/HD_Doc_report_<时间戳>/`；不带该参数
 则不写任何文件。全部参数见 `--help`。
 
-## 在 Ubuntu 上运行 GUI
+## 在 Linux 上运行 GUI（Ubuntu / 银河麒麟）
 
-最快的方式是装打包好的安装包（见下文"打包 Ubuntu 安装包"）：
+最快的方式是装打包好的安装包（见下文"打包 Linux 安装包"）：
 
 ```bash
-chmod +x HD_Doc-1.0-ubuntu.run
-sudo ./HD_Doc-1.0-ubuntu.run        # 自动装依赖、建 venv、注册菜单项
+chmod +x HD_Doc-1.0-linux.run
+sudo ./HD_Doc-1.0-linux.run        # 自动装依赖、建 venv、注册菜单项
 hd-doc                              # 之后随时启动（应用菜单里搜 "HD Doc" 也行）
 ```
 
@@ -90,8 +91,9 @@ sudo ~/.venv/hddoc/bin/python HD_Doc.py        # 终端里以 root 启动（推�
   zram、dm/md、光驱等虚拟块设备已过滤，不会混进来；也可以手动输入
   设备路径
 - **点应用图标即以 root 运行**：非 root 启动时会在窗口出现前弹出
-  pkexec 授权框（与 Windows 的 UAC 一致，Ubuntu 桌面默认可用）；
-  取消则保持标准权限继续启动，也可随时点按钮栏的 **"以 root 重启"**；
+  pkexec 授权框（与 Windows 的 UAC 一致，Ubuntu / 银河麒麟桌面默认可用；
+  已透传 `WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`，UKUI 的 Wayland 会话同样
+  正常）；取消则保持标准权限继续启动，也可随时点按钮栏的 **"以 root 重启"**；
   没有 pkexec 时按提示在终端执行 `sudo python3 HD_Doc.py`
 - 扫镜像文件（`dd` 出来的 `.img`）不需要 root，直接选文件即可
 - 引擎默认 `libaio`（fio 的 Linux 构建自带）；个别 minimal 构建只有
@@ -161,42 +163,56 @@ python build_exe.py
 （`bundled` / `not bundled`）。Linux 打包出的可执行文件同样需要 root 才能
 扫物理磁盘：`sudo ./dist/HD_Doc`。
 
-## 打包 Ubuntu 安装包
+## 打包 Linux 安装包
 
 ```
-python build_ubuntu_pkg.py
+python build_linux_pkg.py
 ```
 
 在**任意机器上**（包括 Windows）都能构建，产物在 `dist/`：
 
 | 文件 | 形态 | 用途 |
 |------|------|------|
-| `HD_Doc-1.0-ubuntu.run` | 自解压安装包 | 直接发给用户，一条命令装完 |
-| `HD_Doc-1.0-ubuntu.tar.gz` | 源码归档 | 手动解压安装、集成到部署流程 |
+| `HD_Doc-1.0-kylin.deb` | 原生 deb 包 | 银河麒麟桌面 / Ubuntu / Deepin / UOS，apt 安装、包管理卸载 |
+| `HD_Doc-1.0-linux.run` | 自解压安装包 | 任意 Linux 直接发用户，一条命令装完 |
+| `HD_Doc-1.0-linux.tar.gz` | 源码归档 | 手动解压安装、集成到部署流程 |
 | `*.sha256` | 校验和 | 传输完整性校验 |
 
 因为 PyInstaller 不能交叉编译，这里打的是**源码安装包**（纯 Python，与
-CPU 架构无关，x86_64 / arm64 通用）：安装时在目标机器上自动完成依赖检查、
-建 venv、装 ttkbootstrap、注册菜单项——不要求目标机提前有任何准备。
+CPU 架构无关，x86_64 / arm64 / loongarch 通用）：安装时在目标机器上自动
+完成依赖检查、建 venv、装 ttkbootstrap、注册菜单项——不要求目标机提前有
+任何准备。
 
-安装包用法（Ubuntu 上）：
+### 银河麒麟安装
+
+**银河麒麟桌面操作系统 V10（及 openKylin / Deepin / UOS 等 deb 系）**：
 
 ```bash
-# 方式一：自解压安装包（推荐）
-chmod +x HD_Doc-1.0-ubuntu.run
-sudo ./HD_Doc-1.0-ubuntu.run            # 安装（-y 全自动不询问）
-sudo ./HD_Doc-1.0-ubuntu.run --uninstall   # 卸载（--uninstall --purge 连配置一起删）
+# 方式一：原生 deb 包（推荐，走系统包管理）
+sudo apt install ./HD_Doc-1.0-kylin.deb
+sudo apt remove hd-doc            # 卸载（apt purge hd-doc 连配置一起清）
 
-# 方式二：tar.gz
-tar xzf HD_Doc-1.0-ubuntu.tar.gz
+# 方式二：自解压安装包（任意 Linux 通用）
+chmod +x HD_Doc-1.0-linux.run
+sudo ./HD_Doc-1.0-linux.run            # 安装（-y 全自动不询问）
+sudo ./HD_Doc-1.0-linux.run --uninstall   # 卸载（--uninstall --purge 连配置一起删）
+
+# 方式三：tar.gz
+tar xzf HD_Doc-1.0-linux.tar.gz
 sudo ./HD_Doc-1.0/install.sh            # 安装
 sudo ./HD_Doc-1.0/uninstall.sh          # 卸载
 ```
 
+**银河麒麟高级服务器操作系统 V10（rpm 系，无 GUI，仅 CLI 场景）**：用
+`.run` 或 `.tar.gz`，`install.sh` 检测不到 apt 时会自动改用 dnf/yum
+安装依赖（`fio`、`python3-tkinter`），之后 `hd-doc --cli --target /dev/sda`。
+
 安装过程会做的事：
 
-1. 检查 `python3 >= 3.8`、`tkinter`、`fio`，缺失的组件询问后 `apt` 安装
-   （`-y` 全自动；`--no-apt` 完全不动 apt；`--no-fio` 跳过 fio）
+1. 识别发行版（`/etc/os-release`，麒麟/openKylin 有专门提示）；检查
+   `python3 >= 3.8`、`tkinter`、`fio`，缺失的组件询问后由 apt（deb 系）
+   或 dnf/yum（rpm 系）安装（`-y` 全自动；`--no-apt` 完全不动包管理器；
+   `--no-fio` 跳过 fio）
 2. 复制程序到 `/opt/hd-doc`（`--prefix DIR` 可改），建 venv 装
    `requirements.txt`；venv 不可用时自动回退系统 Python
 3. 生成启动器 `/usr/local/bin/hd-doc`（GUI/CLI 统一入口）、桌面菜单项
@@ -206,12 +222,14 @@ sudo ./HD_Doc-1.0/uninstall.sh          # 卸载
 改打包内容后重新构建 + 自检：
 
 ```bash
-python build_ubuntu_pkg.py && python packaging/ubuntu/validate_pkg.py
+python build_linux_pkg.py && python packaging/linux/validate_pkg.py
 ```
 
 `validate_pkg.py` 会校验归档完整性（文件树/权限位/LF 行尾/无重复成员）、
 `.run` 解包链路、sha256、双语 key 一致性，并以打桩 `id`/`python3` 的方式
-**模拟完整安装与卸载**（全程只写临时目录，不碰系统 `/opt`、`/usr`）。
+**模拟完整安装与卸载**（全程只写临时目录，不碰系统 `/opt`、`/usr`）；
+对 `.deb` 则校验 ar 结构、control 字段（依赖/架构/版本）、维护脚本语法、
+data.tar 路径白名单，并核对与 tar.gz 载荷同源。
 
 ## 测试
 
@@ -241,9 +259,9 @@ HD_Doc_cli.py   命令行前端（仅英文）
 HD_Doc_gui.py   ttkbootstrap 界面（中英双语，浅色/深色主题）
 HD_Doc.py       入口：分发到 CLI 或 GUI
 build_exe.py    PyInstaller 打包（Windows/Linux 单文件可执行程序）
-build_ubuntu_pkg.py   Ubuntu 安装包打包（.run 自解压 + .tar.gz）
+build_linux_pkg.py   Linux 安装包打包（.deb 原生包 + .run 自解压 + .tar.gz）
 make_icon.py    应用图标生成（PIL 绘制：1024 主图 + hicolor 全套 + 多分辨率 .ico）
-packaging/ubuntu/    安装脚本（install.sh / uninstall.sh）与安装包校验
+packaging/linux/    安装脚本（install.sh / uninstall.sh）与安装包校验
 requirements.txt  运行依赖（ttkbootstrap，GUI 需要）
 lang/           界面文案（en.json、zh.json）
 img/            程序图标（HD_Doc.ico、HD_Doc.png）

@@ -23,9 +23,12 @@ Runs on Windows (admin rights required for physical disks) and Linux.
   no unsampled gray cells
 - Error block list with errno interpretation
 - Quick scan: reads only a head sample of each region, like HD Tune Quick
-  Scan — placed on the same fixed 256-cell grid (one region per heatmap
-  cell, so the region count never drifts with capacity; on small disks the
-  sample is clipped to the region, keeping "one sample per cell")
+  Scan — it shares the same segment setting as full scans (default 4G): the
+  disk is split into regions of the chosen segment size and only the first
+  16MB of each region is read, so the region count = ⌈capacity/segment⌉
+  (1TB disk at 4G → 233 regions); "whole disk at once" (no segment size
+  given) splits evenly up to the region cap; a segment larger than the
+  disk collapses into a single region
 - On-demand reports: nothing is saved unless you export (segments.csv,
   errors.csv, summary.txt)
 - GUI (ttkbootstrap, light/dark themes) and CLI from the same code base;
@@ -72,14 +75,14 @@ the equivalent is root (see below). Disable the automatic request with
 `--export [DIR]` writes the report into `DIR/HD_Doc_report_<timestamp>/`.
 Without it, no files are written. `--help` lists all options.
 
-## Running the GUI on Ubuntu
+## Running the GUI on Linux (Ubuntu / Galaxy Kylin)
 
-The quickest path is the prebuilt install package (see "Build the Ubuntu
-install package" below):
+The quickest path is the prebuilt install package (see "Build the Linux
+install packages" below):
 
 ```bash
-chmod +x HD_Doc-1.0-ubuntu.run
-sudo ./HD_Doc-1.0-ubuntu.run        # installs dependencies, venv, menu entry
+chmod +x HD_Doc-1.0-linux.run
+sudo ./HD_Doc-1.0-linux.run        # installs dependencies, venv, menu entry
 hd-doc                              # launch any time (or search "HD Doc" in the app menu)
 ```
 
@@ -107,10 +110,11 @@ Notes:
   path by hand
 - **Clicking the app icon runs as root**: an unelevated start pops up the
   pkexec authorization prompt before the window appears (same flow as the
-  Windows UAC, available on the Ubuntu desktop by default); cancel to keep
-  standard rights, or click **"Restart as root"** in the button bar at any
-  time; without pkexec, run `sudo python3 HD_Doc.py` from a terminal as
-  instructed
+  Windows UAC, available on the Ubuntu / Galaxy Kylin desktop by default;
+  `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR` are forwarded, so UKUI's Wayland
+  sessions work too); cancel to keep standard rights, or click
+  **"Restart as root"** in the button bar at any time; without pkexec, run
+  `sudo python3 HD_Doc.py` from a terminal as instructed
 - Image files (e.g. `dd` output) need no root — just pick the file
 - The default engine is `libaio` (ships with the usual fio builds); some
   minimal builds only offer `psync`/`posixaio` — switch it in the dropdown,
@@ -188,10 +192,10 @@ and PyInstaller, plus `pip install ttkbootstrap` (see
 (`bundled` / `not bundled`). A Linux build still needs root for physical
 disks: `sudo ./dist/HD_Doc`.
 
-## Build the Ubuntu install package
+## Build the Linux install packages
 
 ```
-python build_ubuntu_pkg.py
+python build_linux_pkg.py
 ```
 
 Builds on **any machine** (Windows included) and puts the results in
@@ -199,35 +203,49 @@ Builds on **any machine** (Windows included) and puts the results in
 
 | File | Form | Use |
 |------|------|-----|
-| `HD_Doc-1.0-ubuntu.run` | self-extracting installer | hand it to users; one command installs |
-| `HD_Doc-1.0-ubuntu.tar.gz` | source archive | manual install, or fold into your deployment |
+| `HD_Doc-1.0-kylin.deb` | native deb package | Galaxy Kylin / Ubuntu / Deepin / UOS — apt install, package-managed removal |
+| `HD_Doc-1.0-linux.run` | self-extracting installer | any Linux; hand it to users, one command installs |
+| `HD_Doc-1.0-linux.tar.gz` | source archive | manual install, or fold into your deployment |
 | `*.sha256` | checksums | transfer integrity |
 
-Since PyInstaller cannot cross-compile, this is a **source install
-package** (pure Python, architecture independent — x86_64 and arm64
-alike): on the target machine it checks dependencies, creates a venv,
-installs ttkbootstrap and registers the menu entry. Nothing needs to be
-prepared on the target machine.
+Since PyInstaller cannot cross-compile, these are **source install
+packages** (pure Python, architecture independent — x86_64, arm64 and
+loongarch alike): on the target machine they check dependencies, create
+a venv, install ttkbootstrap and register the menu entry. Nothing needs
+to be prepared on the target machine.
 
-Using the package (on Ubuntu):
+### Galaxy Kylin (银河麒麟)
+
+**Kylin Desktop V10 (and openKylin / Deepin / UOS — all deb based):**
 
 ```bash
-# Option 1: self-extracting installer (recommended)
-chmod +x HD_Doc-1.0-ubuntu.run
-sudo ./HD_Doc-1.0-ubuntu.run                 # install (-y for unattended)
-sudo ./HD_Doc-1.0-ubuntu.run --uninstall     # uninstall (--uninstall --purge also removes config)
+# Option 1: native deb package (recommended, uses the system package manager)
+sudo apt install ./HD_Doc-1.0-kylin.deb
+sudo apt remove hd-doc            # uninstall (apt purge hd-doc also removes config)
 
-# Option 2: tarball
-tar xzf HD_Doc-1.0-ubuntu.tar.gz
+# Option 2: self-extracting installer (any Linux)
+chmod +x HD_Doc-1.0-linux.run
+sudo ./HD_Doc-1.0-linux.run                 # install (-y for unattended)
+sudo ./HD_Doc-1.0-linux.run --uninstall     # uninstall (--uninstall --purge also removes config)
+
+# Option 3: tarball
+tar xzf HD_Doc-1.0-linux.tar.gz
 sudo ./HD_Doc-1.0/install.sh                 # install
 sudo ./HD_Doc-1.0/uninstall.sh               # uninstall
 ```
 
+**Kylin Advanced Server V10 (rpm based, no GUI, CLI only):** use the
+`.run` or `.tar.gz`; when `install.sh` finds no apt it switches to
+dnf/yum automatically (`fio`, `python3-tkinter`), then run
+`hd-doc --cli --target /dev/sda`.
+
 What the installer does:
 
-1. Checks `python3 >= 3.8`, `tkinter` and `fio`; missing pieces are
-   installed via `apt` after a prompt (`-y` skips the prompt, `--no-apt`
-   never touches apt, `--no-fio` skips fio)
+1. Identifies the distro (`/etc/os-release`; Kylin/openKylin get their
+   own note), checks `python3 >= 3.8`, `tkinter` and `fio`; missing
+   pieces are installed via apt (deb based) or dnf/yum (rpm based)
+   after a prompt (`-y` skips the prompt, `--no-apt` never touches a
+   package manager, `--no-fio` skips fio)
 2. Copies the program to `/opt/hd-doc` (`--prefix DIR` to change it) and
    creates a venv with `requirements.txt`; falls back to the system
    Python automatically if a venv is not possible
@@ -239,7 +257,7 @@ What the installer does:
 After changing the packaged content, rebuild and self-check:
 
 ```bash
-python build_ubuntu_pkg.py && python packaging/ubuntu/validate_pkg.py
+python build_linux_pkg.py && python packaging/linux/validate_pkg.py
 ```
 
 `validate_pkg.py` verifies archive integrity (file tree, permission
@@ -247,6 +265,10 @@ bits, LF line endings, no duplicate members), the `.run` extraction
 chain, sha256 sums and bilingual key parity, and runs a **simulated
 install and uninstall** with stubbed `id`/`python3` — everything stays
 in a temp directory, your system `/opt` and `/usr` are never touched.
+For the `.deb` it checks the ar structure, control fields
+(dependencies/architecture/version), maintainer script syntax and the
+data.tar path whitelist, and confirms it is byte-identical in content
+to the tarball payload.
 
 ## Tests
 
@@ -276,9 +298,9 @@ HD_Doc_cli.py   command-line front end (English only)
 HD_Doc_gui.py   ttkbootstrap GUI (bilingual, light/dark theme)
 HD_Doc.py       entry point: dispatches to CLI or GUI
 build_exe.py    PyInstaller packaging (Windows/Linux single-file executables)
-build_ubuntu_pkg.py  Ubuntu install package builder (.run + .tar.gz)
+build_linux_pkg.py  Linux install package builder (.deb native + .run + .tar.gz)
 make_icon.py    app icon generation (PIL: 1024 master + hicolor set + multi-res .ico)
-packaging/ubuntu/    installer scripts (install.sh / uninstall.sh) and package validator
+packaging/linux/    installer scripts (install.sh / uninstall.sh) and package validator
 requirements.txt  runtime dependencies (ttkbootstrap, for the GUI)
 lang/           interface strings (en.json, zh.json)
 img/            program icon (HD_Doc.ico, HD_Doc.png)

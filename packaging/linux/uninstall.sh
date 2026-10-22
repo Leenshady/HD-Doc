@@ -1,5 +1,5 @@
 #!/bin/sh
-# HD Doc Ubuntu 卸载脚本
+# HD Doc Linux 卸载脚本（.run / tar.gz 安装方式；deb 安装请用 apt remove）
 #
 # 用法:
 #   sudo ./uninstall.sh                # 按安装清单卸载（默认安装）

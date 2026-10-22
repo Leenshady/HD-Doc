@@ -1,11 +1,15 @@
 #!/bin/sh
-# HD Doc Ubuntu 安装脚本
+# HD Doc Linux 安装脚本
+#
+# 支持发行版:
+#   apt 系: Ubuntu 20.04+ / 银河麒麟桌面 V10+ / openKylin / Deepin / UOS
+#   rpm 系: 银河麒麟服务器 V10 / openEuler（无 GUI，仅 CLI 场景）
 #
 # 用法（需要 root）:
-#   sudo ./install.sh                # 交互式安装（缺失组件询问后 apt 安装）
+#   sudo ./install.sh                # 交互式安装（缺失组件询问后安装）
 #   sudo ./install.sh -y             # 全自动（不询问，直接装缺失组件）
 #   sudo ./install.sh --no-fio       # 不安装 fio（已单独装过时）
-#   sudo ./install.sh --no-apt       # 完全不调用 apt（自行准备依赖）
+#   sudo ./install.sh --no-apt       # 完全不调用包管理器（自行准备依赖）
 #   sudo ./install.sh --prefix DIR   # 自定义安装目录（默认 /opt/hd-doc）
 #
 # 安装内容:
@@ -70,6 +74,25 @@ esac
 SRC=$(cd "$(dirname "$0")" && pwd)
 [ -f "$SRC/HD_Doc.py" ] || die "未找到 HD_Doc.py（应在解包后的目录里运行本脚本）"
 
+# ---------------------------------------------------------------- 发行版识别
+# 读取 /etc/os-release（POSIX sh 可安全 source：全是 KEY=VALUE 行）。
+# 银河麒麟桌面 V10 / openKylin / Deepin / UOS 与 Ubuntu 同为 apt 系；
+# 银河麒麟服务器 V10 / openEuler 为 rpm 系（dnf/yum），仅 CLI 场景。
+DISTRO_NAME=""
+DISTRO_ID=""
+if [ -r /etc/os-release ]; then
+    . /etc/os-release 2>/dev/null || true
+    DISTRO_NAME="${PRETTY_NAME:-}"
+    DISTRO_ID="${ID:-}"
+fi
+[ -n "$DISTRO_NAME" ] && info "发行版: $DISTRO_NAME"
+case "$DISTRO_ID" in
+    kylin|openkylin)
+        info "检测到银河麒麟（Kylin）：菜单项/图标按 UKUI 的 XDG 标准安装，"
+        info "扫描物理磁盘时点图标会弹出 polkit 授权框（pkexec，与 Ubuntu 一致）。"
+        ;;
+esac
+
 # ---------------------------------------------------------------- 依赖检查
 PYTHON=$(command -v python3 || command -v python || true)
 [ -n "$PYTHON" ] || die "未找到 python3。Ubuntu 请先安装: sudo apt install python3"
@@ -84,18 +107,50 @@ info "Python: $PYTHON ($py_major.$py_minor)"
 APT_PKGS=""
 apt_updated=0
 
+# 包管理器探测：apt 系（Ubuntu/麒麟桌面/openKylin）→ apt-get；
+# rpm 系（麒麟服务器/openEuler）→ dnf/yum；都没有 → 只提示手动安装。
+PKG_MGR=""
+if command -v apt-get >/dev/null 2>&1; then
+    PKG_MGR=apt
+elif command -v dnf >/dev/null 2>&1; then
+    PKG_MGR=dnf
+elif command -v yum >/dev/null 2>&1; then
+    PKG_MGR=yum
+fi
+
 apt_install() {
     [ -n "$1" ] || return 0
-    [ "$USE_APT" = 1 ] || { warn "跳过 apt 安装: $1（--no-apt）"; return 0; }
-    command -v apt-get >/dev/null 2>&1 || {
-        warn "未找到 apt-get（非 Debian/Ubuntu 系统？）。请手动安装: $1"
-        return 0
-    }
-    ask "需要安装缺失的组件: $1，是否继续？" || { warn "已跳过，稍后需自行安装: $1"; return 0; }
-    [ "$apt_updated" = 1 ] || { info "apt-get update ..."; apt-get update -qq; apt_updated=1; }
-    info "apt-get install $1 ..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $1 \
-        || warn "apt 安装失败: $1（可稍后手动重试）"
+    [ "$USE_APT" = 1 ] || { warn "跳过依赖安装: $1（--no-apt）"; return 0; }
+    case "$PKG_MGR" in
+        apt)
+            ask "需要安装缺失的组件: $1，是否继续？" || { warn "已跳过，稍后需自行安装: $1"; return 0; }
+            [ "$apt_updated" = 1 ] || { info "apt-get update ..."; apt-get update -qq; apt_updated=1; }
+            info "apt-get install $1 ..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $1 \
+                || warn "apt 安装失败: $1（可稍后手动重试）"
+            ;;
+        dnf|yum)
+            # rpm 系包名映射：python3-tk → python3-tkinter；
+            # python3-venv 在 rpm 系不存在（venv 随 python3 提供）→ 跳过
+            _pkgs=""
+            for _p in $1; do
+                case "$_p" in
+                    python3-tk) _p=python3-tkinter ;;
+                    python3-venv) continue ;;
+                esac
+                _pkgs="$_pkgs $_p"
+            done
+            [ -n "$_pkgs" ] || return 0
+            ask "需要安装缺失的组件:$_pkgs，是否继续？" || { warn "已跳过，稍后需自行安装:$_pkgs"; return 0; }
+            info "$PKG_MGR install$_pkgs ..."
+            $PKG_MGR install -y $_pkgs \
+                || warn "$PKG_MGR 安装失败:$_pkgs（可稍后手动重试）"
+            ;;
+        *)
+            warn "未找到 apt-get / dnf / yum（未知包管理系统）。请手动安装: $1"
+            return 0
+            ;;
+    esac
 }
 
 # tkinter（GUI 必需；CLI 模式不需要）
@@ -151,8 +206,8 @@ if [ "$PY_MODE" = system ]; then
         info "系统 Python 已具备 ttkbootstrap，直接使用"
     else
         warn "未找到 ttkbootstrap，GUI 暂无法启动。安装任选其一："
-        warn "  sudo $PREFIX/venv/bin/pip install ttkbootstrap   （先 apt install python3-venv）"
-        warn "  sudo apt install python3-pip && pip install ttkbootstrap"
+        warn "  sudo $PREFIX/venv/bin/pip install ttkbootstrap   （先装好 python3-venv）"
+        warn "  sudo apt install python3-pip && pip install ttkbootstrap   （rpm 系用 dnf）"
         warn "CLI 模式不依赖 ttkbootstrap，可先用：hd-doc --cli --target 镜像文件"
     fi
 fi

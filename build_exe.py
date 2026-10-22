@@ -155,7 +155,8 @@ def main():
     except ImportError:
         print("[错误] 当前 Python 没有 tkinter，打不了的 GUI 版。")
         print("       Windows: 换用 python.org 安装包自带的 Python（自带 tkinter）")
-        print("       Ubuntu:  sudo apt install python3-tk")
+        print("       Ubuntu/麒麟(apt 系):  sudo apt install python3-tk")
+        print("       麒麟服务器/openEuler(rpm 系):  sudo dnf install python3-tkinter")
         return 2
     try:
         import ttkbootstrap  # noqa: F401

@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""validate_pkg.py —— 校验 build_ubuntu_pkg.py 产出的 Ubuntu 安装包
+"""validate_pkg.py —— 校验 build_linux_pkg.py 产出的 Linux 安装包
 
 检查项:
-  1. .run 自解压头：shebang、shell 语法（sh -n）、载荷标记唯一
+  1. .run 自解压头：shebang、shell 语法（sh -n）、载荷标记唯一、声明支持麒麟
   2. 从 .run 抽出载荷 → 解 tar → 核对文件树、权限位、属主、行尾（LF）
   3. tar.gz 与 .run 内嵌载荷内容一致
   4. .sha256 校验和匹配
   5. lang/ 双语 key 一致、JSON 可解析
   6. 模拟安装 dry-run（stub id/python3，全部路径落在临时目录，
      不碰系统 /opt、/usr）—— 验证 install.sh 全流程逻辑
+  7. .deb（麒麟/Ubuntu 原生包）：ar 结构、control 字段、维护脚本语法、
+     data.tar 路径白名单/权限/属主、与 tar.gz 载荷同源
 
-用法: python validate_pkg.py [dist/HD_Doc-<版本>-ubuntu.run]
+用法: python validate_pkg.py [dist/HD_Doc-<版本>-linux.run]
 """
 import gzip
 import hashlib
@@ -38,6 +40,38 @@ def check(name, cond, detail=""):
     if not cond:
         FAILED.append(name)
     return cond
+
+
+def sh_syntax_ok(data, suffix=".sh"):
+    """把字节写入临时文件跑 sh -n，返回 (ok, err)"""
+    with tempfile.NamedTemporaryFile("wb", suffix=suffix, delete=False) as tf:
+        tf.write(data)
+        path = tf.name
+    try:
+        r = subprocess.run(["sh", "-n", path], capture_output=True, text=True)
+        return r.returncode == 0, r.stderr.strip()
+    finally:
+        os.unlink(path)
+
+
+def ar_members(data):
+    """解析 ar 归档（.deb 容器）→ {name: bytes}；校验 magic 与成员完整性"""
+    if not data.startswith(b"!<arch>\n"):
+        raise SystemExit("[错误] .deb 不是合法 ar 归档（缺 !<arch> 魔数）")
+    out = {}
+    pos = 8
+    while pos < len(data):
+        hdr = data[pos:pos + 60]
+        if len(hdr) < 60:
+            raise SystemExit("[错误] ar 成员头截断（offset %d）" % pos)
+        name = hdr[0:16].decode("ascii").rstrip()
+        size = int(hdr[48:58].decode("ascii").strip())
+        body = data[pos + 60:pos + 60 + size]
+        if len(body) != size:
+            raise SystemExit("[错误] ar 成员 %s 数据截断" % name)
+        out[name] = body
+        pos += 60 + size + (size % 2)      # ar 要求成员 2 字节对齐
+    return out
 
 
 def split_run(path):
@@ -76,7 +110,7 @@ def main():
         cands = [f for f in os.listdir(DIST) if f.endswith(".run")] \
             if os.path.isdir(DIST) else []
         if not cands:
-            raise SystemExit("[错误] dist/ 下没有 .run，请先运行 build_ubuntu_pkg.py")
+            raise SystemExit("[错误] dist/ 下没有 .run，请先运行 build_linux_pkg.py")
         run_path = os.path.join(DIST, sorted(cands)[0])
     print("校验安装包: %s\n" % run_path)
 
@@ -84,14 +118,9 @@ def main():
     print("== 1. 自解压头 ==")
     header, payload = split_run(run_path)
     check("shebang 为 #!/bin/sh", header.startswith(b"#!/bin/sh"))
-    with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as tf:
-        tf.write(header)
-        hdr_path = tf.name
-    try:
-        r = subprocess.run(["sh", "-n", hdr_path], capture_output=True, text=True)
-        check("头部 shell 语法（sh -n）", r.returncode == 0, r.stderr.strip())
-    finally:
-        os.unlink(hdr_path)
+    ok, err = sh_syntax_ok(header)
+    check("头部 shell 语法（sh -n）", ok, err)
+    check("头部声明支持银河麒麟", "麒麟" in header.decode("utf-8", "replace"))
 
     # ---------- 2. 载荷内容 ----------
     print("\n== 2. 载荷文件树/权限/行尾 ==")
@@ -127,7 +156,7 @@ def main():
 
     # ---------- 3. tar.gz 与 .run 载荷一致 ----------
     print("\n== 3. tar.gz 一致性 ==")
-    tgz = os.path.join(DIST, "HD_Doc-%s-ubuntu.tar.gz" % ver)
+    tgz = os.path.join(DIST, "HD_Doc-%s-linux.tar.gz" % ver)
     if check("tar.gz 存在", os.path.isfile(tgz)):
         with open(tgz, "rb") as f:
             m2 = tar_members(f.read())
@@ -266,6 +295,126 @@ def main():
         check("--help 正常输出用法", r6.returncode == 0 and "用法" in r6.stdout)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+    # ---------- 7. .deb（麒麟/Ubuntu 原生包） ----------
+    print("\n== 7. .deb 原生包（银河麒麟/Ubuntu） ==")
+    deb_path = os.path.join(DIST, "HD_Doc-%s-kylin.deb" % ver)
+    if check(".deb 存在", os.path.isfile(deb_path)):
+        ar = {}
+        try:
+            ar = ar_members(open(deb_path, "rb").read())
+            check("ar 结构可解析", True)
+        except SystemExit as e:
+            check("ar 结构可解析", False, e)
+        check("ar 成员 = debian-binary/control.tar.gz/data.tar.gz",
+              set(ar) == {"debian-binary", "control.tar.gz", "data.tar.gz"},
+              sorted(ar))
+        check("debian-binary 版本 2.0", ar.get("debian-binary") == b"2.0\n")
+
+        ctl = {}
+        if "control.tar.gz" in ar:
+            try:
+                ctl = tar_members(ar["control.tar.gz"])
+            except SystemExit as e:
+                check("control.tar.gz 可解析", False, e)
+        if ctl:
+            for script in ("./control", "./postinst", "./postrm"):
+                check("control.tar 含 %s" % script, script in ctl)
+            if "./control" in ctl:
+                fields = {}
+                for ln in ctl["./control"][1].decode("utf-8").splitlines():
+                    if ln.startswith(" ") or ":" not in ln:
+                        continue          # 续行 / 分隔行
+                    k, v = ln.split(":", 1)
+                    fields[k.strip()] = v.strip()
+                check("Package=hd-doc", fields.get("Package") == "hd-doc",
+                      fields.get("Package"))
+                check("Architecture=all（与 CPU 架构无关）",
+                      fields.get("Architecture") == "all",
+                      fields.get("Architecture"))
+                check("Version=%s" % ver, fields.get("Version") == ver,
+                      fields.get("Version"))
+                dep = fields.get("Depends", "")
+                for p in ("python3", "python3-tk", "python3-venv", "fio",
+                          "policykit-1"):
+                    check("Depends 含 %s" % p, p in dep, dep)
+                check("Installed-Size 为正整数",
+                      fields.get("Installed-Size", "").isdigit(),
+                      fields.get("Installed-Size"))
+                check("Description 非空",
+                      len(fields.get("Description", "")) > 10)
+            for script in ("./postinst", "./postrm"):
+                if script not in ctl:
+                    continue
+                m, b = ctl[script]
+                check("%s 权限 0755" % script, m.mode == 0o755, oct(m.mode))
+                check("%s 属主 root" % script, m.uid == 0 and m.gid == 0)
+                check("%s LF 行尾" % script, b"\r" not in b)
+                ok, err = sh_syntax_ok(b)
+                check("%s 语法（sh -n）" % script, ok, err)
+
+        data = {}
+        if "data.tar.gz" in ar:
+            try:
+                data = tar_members(ar["data.tar.gz"])
+            except SystemExit as e:
+                check("data.tar.gz 可解析", False, e)
+        if data:
+            check("所有路径以 ./ 开头", all(n.startswith("./") for n in data))
+            check("无 .. 路径穿越",
+                  not any(".." in n.split("/") for n in data))
+            # 顶层目录（./opt、./usr 等）本身合法，其下必须落在白名单内
+            top_ok = ("./opt", "./usr", "./var", "./etc", "./lib")
+            allowed = ("./opt/hd-doc", "./usr/bin", "./usr/share",
+                       "./usr/lib", "./var/lib", "./etc")
+            bad = [n for n in data
+                   if n not in top_ok
+                   and not any(n == p or n.startswith(p + "/")
+                               for p in allowed)]
+            check("路径白名单（/opt/hd-doc、/usr、/var/lib）", not bad, bad[:5])
+            check("属主 root(0)",
+                  all(m.uid == 0 and m.gid == 0 for m, _ in data.values()))
+            check("权限位仅 0755/0644",
+                  all(m.mode in (0o755, 0o644) for m, _ in data.values()))
+            check("无符号链接", all(m.isfile() or m.isdir()
+                                   for m, _ in data.values()))
+            if "./usr/bin/hd-doc" in data:
+                check("启动器 /usr/bin/hd-doc 0755",
+                      data["./usr/bin/hd-doc"][0].mode == 0o755)
+                body = data["./usr/bin/hd-doc"][1].decode("utf-8")
+                check("启动器引用 /opt/hd-doc", "/opt/hd-doc" in body)
+            if "./opt/hd-doc/HD_Doc.py" in data:
+                check("HD_Doc.py 0755",
+                      data["./opt/hd-doc/HD_Doc.py"][0].mode == 0o755)
+            if "./usr/share/applications/hd-doc.desktop" in data:
+                d = data["./usr/share/applications/hd-doc.desktop"][1] \
+                    .decode("utf-8")
+                check("desktop Exec=hd-doc", "Exec=hd-doc" in d)
+                check("desktop Icon=hd-doc", "Icon=hd-doc" in d)
+                check("desktop StartupWMClass=HD_Doc",
+                      "StartupWMClass=HD_Doc" in d)
+            icons = sorted(n for n in data
+                           if n.startswith("./usr/share/icons/hicolor/")
+                           and n.endswith("hd-doc.png"))
+            check("hicolor 全套 5 尺寸图标", len(icons) == 5, icons)
+            check("pixmaps 兜底图标",
+                  "./usr/share/pixmaps/hd-doc.png" in data)
+            check("lang/en.json 已打包",
+                  "./opt/hd-doc/lang/en.json" in data)
+            # deb 与 tar.gz 载荷同源（/opt/hd-doc 下逐字节一致）
+            diff = [n for n, (_m, buf) in data.items()
+                    if n.startswith("./opt/hd-doc/")
+                    and ("%s/%s" % (top, n[len("./opt/hd-doc/"):])) in members
+                    and members["%s/%s" % (top, n[len("./opt/hd-doc/"):])][1]
+                    != buf]
+            check("deb 与 tar.gz 载荷同源（/opt/hd-doc 逐字节一致）",
+                  not diff, diff[:5])
+
+        sf = deb_path + ".sha256"
+        if check(".deb.sha256 存在", os.path.isfile(sf)):
+            want = open(sf, encoding="utf-8").read().split()[0]
+            got = hashlib.sha256(open(deb_path, "rb").read()).hexdigest()
+            check(".deb 校验和匹配", want == got)
 
     print("\n" + "=" * 50)
     if FAILED:
