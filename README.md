@@ -125,6 +125,42 @@ Notes:
   minimal builds only offer `psync`/`posixaio` — switch it in the dropdown,
   available engines are probed automatically
 
+### The prompt appears and vanishes / no window after authorizing?
+
+If the authorization prompt flashes away, or the main window never shows up
+after entering the password, the elevated instance almost certainly died on
+startup because it could not reach the graphical display (pkexec closes its
+window as soon as the target process exits — which looks like "the prompt
+disappeared by itself"). Work through this list:
+
+1. **Read the in-app hint**: when pkexec exits non-zero, the original window
+   stays and shows a yellow banner pointing at the environment snapshot log
+   (`/tmp/hd-doc-elevated-<pid>.log` by default, override with
+   `HDTUNE_ELEV_LOG`)
+2. **Compare the snapshot**: the first thing the elevated instance does is
+   write `DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`,
+   `QT_QPA_PLATFORM` and friends into that file; diff them against the same
+   variables in your own session — the usual suspects are a `DISPLAY` that
+   `sudo` scrubbed, or an `XAUTHORITY` pointing somewhere root cannot read
+   (check with `xauth list`)
+3. **Wayland sessions (UKUI/KDE)**: make sure `WAYLAND_DISPLAY` and
+   `XDG_RUNTIME_DIR` are non-empty in the snapshot; on some distros root's
+   Qt cannot use Wayland — force the X11 compatibility layer with
+   `export QT_QPA_PLATFORM=xcb` before starting
+4. **Still stuck? Elevate from a terminal** (skips the graphical prompt and
+   prints errors straight to the screen):
+
+```bash
+sudo python3 HD_Doc.py        # run from source
+sudo hd-doc                    # installed package
+```
+
+Note: authorization is waited on for up to 90 seconds (`HDTUNE_ELEVATE_WAIT`
+to change) — typing the password slowly no longer makes the prompt vanish.
+The parent process only steps aside once the elevated instance's window is
+really up (a `READY` line in the snapshot file); on timeout the prompt is
+closed and the app starts with standard rights, with a banner explaining it.
+
 ## Language files
 
 Interface strings live in `lang/<code>.json` — one file per language,

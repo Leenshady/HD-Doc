@@ -99,6 +99,34 @@ sudo ~/.venv/hddoc/bin/python HD_Doc.py        # 终端里以 root 启动（推�
 - 引擎默认 `libaio`（fio 的 Linux 构建自带）；个别 minimal 构建只有
   `psync`/`posixaio`，下拉框切换即可，界面会自动探测可用引擎
 
+### 授权框弹出后又消失 / 授权后窗口打不开？
+
+授权框闪现后消失、或输入密码后主窗口始终不出来，几乎都是**提权实例
+连不上图形显示**导致秒退（pkexec 检测到目标进程结束就关窗口，看起来
+就是"授权框自行消失"）。按顺序排查：
+
+1. **看界面提示**：pkexec 以非 0 退出时，原窗口会保留并给出黄色横幅，
+   指向环境快照日志（默认 `/tmp/hd-doc-elevated-<pid>.log`，
+   `HDTUNE_ELEV_LOG` 可改路径）
+2. **看快照内容**：提权实例启动第一件事就是把 `DISPLAY`、
+   `XAUTHORITY`、`WAYLAND_DISPLAY`、`XDG_RUNTIME_DIR`、`QT_QPA_PLATFORM`
+   等关键变量写进该文件；对比当前用户同名变量的值，缺哪个补哪个
+   （常见：`sudo` 清掉了 `DISPLAY`，或 XAUTHORITY 指向了 root 读不了的
+   用户目录——可执行 `xauth list` 确认）
+3. **Wayland 会话（UKUI/KDE）**：确认 `WAYLAND_DISPLAY` 与
+   `XDG_RUNTIME_DIR` 在快照里非空；个别发行版 root 的 Qt 走不了 Wayland，
+   可在启动前 `export QT_QPA_PLATFORM=xcb` 强制走 X11 兼容层
+4. **还是不行就用终端提权**（绕过图形授权，错误直接打在屏幕上）：
+
+```bash
+sudo python3 HD_Doc.py        # 源码运行
+sudo hd-doc                    # 安装包运行
+```
+
+说明：授权等待最多 90 秒（`HDTUNE_ELEVATE_WAIT` 可调），密码输得慢不会
+闪退；只有提权实例窗口真正起来（快照文件出现 `READY` 行）父进程才退出
+让位。等待超时会关掉授权框并以标准权限启动，界面横幅会说明。
+
 ## 语言文件
 
 界面文案放在 `lang/<代码>.json`，一个语言一个文件，启动时自动扫描发现——

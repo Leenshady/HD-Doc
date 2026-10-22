@@ -152,6 +152,22 @@ QToolTip {{ background: #ffffe1; color: #000000;
 THEME_QSS = {name: _QSS_TEMPLATE.format(**colors)
              for name, colors in THEME_COLORS.items()}
 
+# pkexec 授权等待宽限（秒）：输密码、找授权框都要时间，早期版本用 2.5 秒
+# 固定超时猜测"授权进行中"，输密码超过 2.5 秒父进程先退出、授权框跟着
+# 消失。现在靠就绪标记（core.elev_ready）精确判定，这里只是兜底上限。
+ELEVATE_WAIT_DEFAULT = 90
+
+
+def _elevate_wait_secs():
+    """授权等待宽限（秒）：HDTUNE_ELEVATE_WAIT 可覆盖（测试/慢机器），
+    非法值回退默认；夹在 [1, 600] 防呆。"""
+    raw = os.environ.get("HDTUNE_ELEVATE_WAIT", "")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return ELEVATE_WAIT_DEFAULT
+    return max(1.0, min(v, 600.0))
+
 
 def _resource_dir():
     """img/ 资源目录：打包版在 sys._MEIPASS，源码版在脚本同级"""
@@ -214,9 +230,18 @@ def ensure_admin_at_startup():
 
     平台差异：Windows 用 ShellExecuteEx("runas")，取消时同步返回错误、
     立刻可知；Linux 没有 UAC，用 pkexec 异步启动（授权期间 pkexec 一直
-    存活），因此这里轮询约 2.5 秒：pkexec 很快退出 = 授权被取消或
-    pkexec 不可用 → 保持标准权限继续启动（Ubuntu/麒麟桌面图标点击时
-    同样会弹 polkit 密码框，与 Windows 的 UAC 体验一致）。
+    存活）。此时"存活"有两种含义——用户还在输密码，或授权已通过、提权
+    实例正在起窗口——必须用就绪标记区分（core.elev_ready）：提权实例
+    窗口起来后会向 HDTUNE_ELEV_LOG 快照文件追加 READY 行。因此这里：
+      - 出现 READY → 提权实例已接管 → 返回 True，调用方退出本进程
+        （窗口都不会创建，不存在"先闪一下再提权"）；
+      - pkexec 退出 → 授权被取消(126)/目标实例崩溃(其他非 0) → 返回
+        False，以标准权限继续运行（扫镜像文件、刷新磁盘列表都不需要
+        管理员；物理盘扫描入口还会再提权）；
+      - 超时（默认 90s，HDTUNE_ELEVATE_WAIT 可调）仍未就绪 → 终止
+        pkexec 关掉授权框，返回 False 照常启动。
+    早期版本用固定 2.5 秒超时猜测"授权进行中"：输密码超过 2.5 秒时
+    父进程先退出、授权框跟着消失——用户看到"密码没输完窗口就没了"。
     """
     if is_admin() or not auto_elevate_enabled():
         return False
@@ -231,6 +256,15 @@ def ensure_admin_at_startup():
               % (err or "unknown"))
         return False
     # ---- Linux / 其他平台：pkexec 图形授权 ----
+    # 预检显示环境：DISPLAY/WAYLAND_DISPLAY 全无（含探测）时，root 实例
+    # 注定连不上 X/Wayland（Qt 平台插件失败会 C++ qFatal 秒退，授权框
+    # 跟着闪退）——不弹这个注定失败的框，保持标准权限启动并提示。
+    if not (core._probe_display()
+            or os.environ.get("WAYLAND_DISPLAY")):
+        print("[Elevate] No DISPLAY / WAYLAND_DISPLAY detected;"
+              " skipping pkexec elevation (would fail to connect).")
+        core.log_event("startup: no display env; skip pkexec elevation")
+        return False
     popen, err = core.pkexec_gui_spawn()
     if popen is None:
         # 已是 root（err=None）或 pkexec 不可用：不阻塞启动
@@ -239,19 +273,47 @@ def ensure_admin_at_startup():
         core.log_event("startup: pkexec unavailable (%s)" % (err or "root"))
         return False
     core.log_event("startup: pkexec elevation requested (pid=%s)" % popen.pid)
-    deadline = time.monotonic() + 2.5
-    while time.monotonic() < deadline and popen.poll() is None:
+    # 就绪标记协议（替代早期的固定 2.5 秒超时猜测，见函数文档）：
+    # pkexec 存活 ≠ 授权成功——用户可能还在输密码。只有提权实例窗口
+    # 起来写入 READY 行（core.elev_ready）才判定"已接管"，父进程退出。
+    marker = core.elev_log_path()
+    wait_secs = _elevate_wait_secs()
+    deadline = time.monotonic() + wait_secs
+    while True:
+        code = popen.poll()
+        if code is not None:
+            print("[Elevate] pkexec exited with %s (authorization cancelled"
+                  " or failed); continuing unelevated." % code)
+            core.log_event("startup: pkexec exited rc=%s; continuing"
+                           " unelevated" % code)
+            # pkexec 在授权前/后很快退出：排除"用户主动取消"后，最常见的
+            # 是提权实例启动即崩溃（root 连不上 X/Wayland → Qt qFatal，
+            # Python 层无痕）。子进程已把环境快照写进 HDTUNE_ELEV_LOG，
+            # 指给用户/排查者。
+            if code:
+                core.log_event("startup: elevated instance may have crashed"
+                               " on startup; see env snapshot in %s" % marker)
+            return False
+        if core.elev_ready(marker):
+            # 提权实例窗口已显示：本进程退出，让提权实例接管
+            print("[Elevate] Elevated instance is up (marker %s); exiting"
+                  " this process." % marker)
+            core.log_event("startup: elevated instance READY (%s); exiting"
+                           % marker)
+            return True
+        if time.monotonic() >= deadline:
+            # 超时：授权框关了（终止 pkexec），本进程以标准权限继续启动，
+            # 窗口随后会出现；用户可改用"以 root 重启"或终端 sudo。
+            print("[Elevate] Authorization wait timed out after %.0fs;"
+                  " continuing unelevated." % wait_secs)
+            core.log_event("startup: elevation wait timed out after %.0fs;"
+                           " pkexec terminated" % wait_secs)
+            try:
+                popen.terminate()
+            except Exception:
+                pass
+            return False
         time.sleep(0.1)
-    if popen.poll() is None:
-        # 授权进行中或提权实例已启动：本进程退出，让提权实例接管
-        print("[Elevate] Authorization in progress / elevated instance started;"
-              " exiting this process.")
-        return True
-    code = popen.returncode
-    print("[Elevate] pkexec exited with %s (authorization cancelled or failed);"
-          " continuing unelevated." % code)
-    core.log_event("startup: pkexec exited rc=%s; continuing unelevated" % code)
-    return False
 
 
 class MapWidget(QWidget):
@@ -387,7 +449,8 @@ class HDDocApp(QMainWindow):
         # 观察子进程存活——授权取消/失败时 pkexec 很快退出，此时必须保留
         # 本窗口并提示，不能像旧版那样 200ms 后无条件退出（表现为"闪退"）
         self._pkexec_popen = None
-        self._pkexec_polls = 0
+        self._pkexec_marker = ""       # 就绪标记文件（core.elev_log_path）
+        self._pkexec_deadline = 0.0    # 授权等待宽限截止（monotonic）
 
         self.q = queue.Queue()
         self.scanner = None
@@ -1189,11 +1252,24 @@ class HDDocApp(QMainWindow):
     def _relaunch_elevated_linux(self):
         """Linux pkexec 提权：发起 → 横幅告知等待授权 → 轮询子进程。
 
-        判定规则（pkexec 语义）：授权期间 pkexec 一直存活；授权被取消 /
-        polkit 拒绝 / 启动失败时 pkexec 立刻退出。因此：
-          - 轮询期内退出 → 授权失败：保留本窗口，横幅说明（不闪退）
-          - 轮询期满仍存活 → 授权进行中/提权实例已启动：退出本窗口
+        判定规则（就绪标记协议，与入口 ensure_admin_at_startup 一致）：
+        pkexec 存活有两种含义——用户还在输密码 / 授权已通过实例正起窗口，
+        只看存活无法区分（早期固定 3 秒轮询即因此误判）。因此：
+          - 快照文件出现 READY 行 → 提权实例已接管：退出本窗口
+          - pkexec 退出 → 授权被取消(126)/目标实例崩溃(其他非 0)：
+            保留本窗口，横幅说明（不闪退）
+          - 超时（_elevate_wait_secs，默认 90s）仍未就绪 → 终止 pkexec，
+            保留窗口并提示可重试/终端 sudo
         """
+        # 无显示环境时 root 实例必然连不上 X/Wayland（Qt 平台插件失败 →
+        # C++ qFatal 秒退，授权框跟着闪退）：直接提示，不发起注定失败的
+        # 提权（与启动入口 ensure_admin_at_startup 的预检同一逻辑）。
+        if not (core._probe_display()
+                or os.environ.get("WAYLAND_DISPLAY")):
+            self._banner("gui.msg.elevate_no_display", "warn")
+            self._log("warn", "gui.msg.elevate_no_display")
+            core.log_event("elevate: no display env; pkexec not spawned")
+            return
         popen, err = core.pkexec_gui_spawn()
         if popen is None:
             # 已是 root（err=None，理论上按钮此时已隐藏）或 pkexec 不可用
@@ -1203,10 +1279,12 @@ class HDDocApp(QMainWindow):
                       err=err or "already root")
             return
         self._pkexec_popen = popen
-        self._pkexec_polls = 20               # 150ms × 20 ≈ 3s
+        self._pkexec_marker = core.elev_log_path()
+        self._pkexec_deadline = time.monotonic() + _elevate_wait_secs()
         self._banner("gui.msg.elevate_waiting", "info")
         self._log("info", "gui.log.elevate_requested")
-        core.log_event("elevate: pkexec requested (pid=%s)" % popen.pid)
+        core.log_event("elevate: pkexec requested (pid=%s, marker=%s)"
+                       % (popen.pid, self._pkexec_marker))
         self._pkexec_timer.start()
 
     def _poll_pkexec(self):
@@ -1216,28 +1294,58 @@ class HDDocApp(QMainWindow):
             return
         try:
             if popen.poll() is None:
-                self._pkexec_polls -= 1
-                if self._pkexec_polls <= 0:
-                    # 3 秒仍存活：授权进行中或提权实例已启动，退出本窗口，
-                    # 避免两个实例并存（授权框关掉后新窗口会出现）
+                # pkexec 仍存活：授权框还在（用户可能正在输密码）。只有
+                # 出现就绪标记才认定"提权实例已接管"——不能像早期版本那样
+                # 轮询几秒没退出就替用户决定（输密码慢一点都会闪退）。
+                if core.elev_ready(getattr(self, "_pkexec_marker", "")
+                                   or core.elev_log_path()):
                     self._pkexec_popen = None
                     self._pkexec_timer.stop()
                     self._log("info", "gui.log.elevate_handover")
+                    core.log_event("elevate: elevated instance READY;"
+                                   " handover (this window exits)")
                     self._exit_now()
+                    return
+                if time.monotonic() >= self._pkexec_deadline:
+                    # 超时：保留窗口（用户看得见），关掉授权框并提示
+                    self._pkexec_popen = None
+                    self._pkexec_timer.stop()
+                    try:
+                        popen.terminate()
+                    except Exception:
+                        pass
+                    secs = int(_elevate_wait_secs())
+                    self._banner("gui.msg.elevate_timeout", "warn", secs=secs)
+                    self._log("warn", "gui.msg.elevate_timeout", secs=secs)
+                    core.log_event("elevate: wait timed out after %ss;"
+                                   " pkexec terminated" % secs)
+                    return
                 return
         except Exception:
             # 窗口已销毁等：放弃轮询
             self._pkexec_popen = None
             self._pkexec_timer.stop()
             return
-        # pkexec 已退出 = 授权被取消/失败：保留窗口并说明原因
+        # pkexec 已退出 = 授权被取消/失败：保留窗口并说明原因。
+        # 退出码语义（polkit/pkexec 约定）：126 = 认证失败/授权被取消或
+        # polkit 拒绝；127 = 目标程序找不到/无法执行；其他非 0 = 授权后
+        # 目标实例自身退出（root 连不上 X/Wayland → Qt qFatal 秒退是该
+        # 场景最常见原因）。子进程已把环境快照写进 HDTUNE_ELEV_LOG
+        # （core.pkexec_gui_spawn 注入），指给用户/排查者。
         self._pkexec_timer.stop()
         code = popen.returncode
         self._pkexec_popen = None
-        key = ("gui.msg.elevate_cancelled" if code
-               else "gui.msg.elevate_failed")
-        self._banner(key, "warn", code=code)
-        self._log("warn", key, code=code)
+        if code != 126:
+            elev_log = getattr(self, "_pkexec_marker", "") \
+                or core.elev_log_path()
+            self._banner("gui.msg.elevate_log_hint", "warn", path=elev_log)
+            self._log("warn", "gui.msg.elevate_log_hint", path=elev_log)
+            core.log_event("elevate: pkexec exited rc=%s (instance may have"
+                           " crashed on startup); env snapshot: %s"
+                           % (code, elev_log))
+            return
+        self._banner("gui.msg.elevate_cancelled", "warn", code=code)
+        self._log("warn", "gui.msg.elevate_cancelled", code=code)
         core.log_event("elevate: pkexec exited rc=%s; staying unelevated"
                        % code)
 

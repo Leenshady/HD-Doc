@@ -58,6 +58,7 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
 import argparse
 import os
 import sys
+import time
 
 import HD_Doc_core as core
 from HD_Doc_core import VERSION, IS_WIN, auto_elevate_enabled, _ensure_console, \
@@ -107,10 +108,71 @@ def build_parser():
     return ap
 
 
+def _dump_elev_env():
+    """pkexec 提权实例的启动环境快照（仅在 HDTUNE_ELEV_LOG 存在时写）。
+
+    为什么需要：root 实例连不上 X/Wayland 时，Qt 平台插件初始化失败是
+    C++ 层 qFatal 直接 abort——Python 的 except / sys.excepthook /
+    日志模块全部派不上用场，表现为"pkexec 授权框闪退、什么都不发生"。
+    唯一的排查手段是让子进程在装配 Qt **之前**把现场环境写进文件。
+    父进程由 core.pkexec_gui_spawn 通过 pkexec env 注入 HDTUNE_ELEV_LOG
+    （默认 /tmp/hd-doc-elevated.log，root 可写、普通用户可读）。
+    """
+    path = os.environ.get("HDTUNE_ELEV_LOG")
+    if not path:
+        return
+    try:
+        try:
+            uid, euid = os.getuid(), os.geteuid()
+        except AttributeError:          # Windows 无 getuid（调试/移植路径）
+            uid = euid = "n/a"
+        lines = ["elevated instance snapshot",
+                 "uid=%s euid=%s argv=%s" % (uid, euid, sys.argv)]
+        for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
+                  "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+                  "QT_QPA_PLATFORM", "HOME", "PATH"):
+            lines.append("  %s=%s" % (k, os.environ.get(k)))
+        # X 连接三要素的实际存在性（root 能否读到 authority 文件）
+        xauth = os.environ.get("XAUTHORITY")
+        if xauth:
+            lines.append("  XAUTHORITY file exists: %s"
+                         % os.path.isfile(xauth))
+        disp = os.environ.get("DISPLAY") or ""
+        if disp.startswith(":"):
+            num = disp[1:].split(".")[0]
+            if num.isdigit():
+                lines.append("  X socket /tmp/.X11-unix/X%s exists: %s"
+                             % (num, os.path.exists(
+                                 "/tmp/.X11-unix/X%s" % num)))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        pass                     # 快照失败不能影响启动
+
+
+def mark_elev_ready():
+    """提权实例就绪标记：窗口已显示，向 HDTUNE_ELEV_LOG 追加 READY 行。
+
+    父进程（ensure_admin_at_startup / GUI 的 _poll_pkexec）靠这一行区分
+    "用户还在输密码"与"提权实例已起来、可以放心退出让位"——没有它，父
+    进程只能靠超时猜测，输密码稍慢就会看到授权框闪退（详见
+    core.elev_ready 的说明）。无 HDTUNE_ELEV_LOG（非提权启动）时是空操作。
+    """
+    path = os.environ.get("HDTUNE_ELEV_LOG")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("READY pid=%s t=%.3f\n" % (os.getpid(), time.time()))
+    except Exception:
+        pass                     # 标记失败不能影响启动
+
+
 def main(argv=None):
     # 先修编码再解析参数：argparse 的 --help / 用法错误会直接打印后退出，
     # 必须在此之前保证标准流编码与终端匹配（打包版在 UTF-8 终端不乱码）
     _fix_stdout_encoding()
+    _dump_elev_env()            # 提权实例现场快照（无 HDTUNE_ELEV_LOG 时是空操作）
     args = build_parser().parse_args(argv)
 
     if args.version:
@@ -152,16 +214,21 @@ def main(argv=None):
     # ---- Qt 应用装配（PyQt5 跨 Windows/Ubuntu/银河麒麟 一致）----
     # 高分屏缩放属性必须在 QApplication 构造前设置（Qt5 才有这两个开关；
     # Qt6 起默认开启，属性不存在时静默跳过）
+    core.log_event("gui: assembling Qt application")
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
     for _attr in ("AA_EnableHighDpiScaling", "AA_UseHighDpiPixmaps"):
         if hasattr(Qt, _attr):
             QApplication.setAttribute(getattr(Qt, _attr))
     qt_app = QApplication(sys.argv)
+    core.log_event("gui: QApplication created")
     qt_app.setApplicationName("HD_Doc")       # X11 WM_CLASS 的 res_class，
     qt_app.setDesktopFileName("hd-doc")       # 配合 StartupWMClass 匹配菜单图标
     win = HDDocApp()
     win.show()
+    # 告诉父进程"提权实例窗口已就绪，可以退出让位了"（父进程的
+    # ensure_admin_at_startup / GUI 轮询据此收尾，见 core.elev_ready）
+    mark_elev_ready()
     # onefile 父进程（bootloader）被外部杀死时（任务管理器结束上面那个
     # 同名进程），本进程与 fio 不会跟着退、会变孤儿继续读盘：父进程监控
     # （Windows 版 PDEATHSIG）发现父死后同步杀 fio 并退出。Job Object

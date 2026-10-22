@@ -602,18 +602,121 @@ def _elevation_target(gui=False):
     return exe, subprocess.list2cmdline(params)
 
 
+def _probe_x_authority():
+    """推断当前用户的 X authority 文件路径（pkexec 提权后 root 要连 X 必需）。
+
+    背景（Kylin/Ubuntu 实测坑）：从桌面图标启动的程序，环境里通常
+    **没有 XAUTHORITY**——未提权时 X 客户端隐式读"自家目录下的
+    ~/.Xauthority"没问题；pkexec 提权后家目录变成 /root，root 读不到
+    用户的 ~/.Xauthority → X 连接失败 → Qt 平台插件（xcb）初始化失败 →
+    C++ 层 qFatal 直接 abort（Python 的 except/excepthook 都抓不到）→
+    提权实例秒退 → pkexec 随之退出、授权框消失，用户看到的就是
+    "授权框 2 秒自行消失、什么都没发生"。
+
+    root 有 DAC_OVERRIDE，可以读用户家目录/runtime 目录里的 authority
+    文件，所以这里主动把文件路径找出来交给 pkexec env 透传。
+    返回 None 表示找不到（调用方按 Wayland 场景处理）。
+    """
+    v = os.environ.get("XAUTHORITY")
+    if v:
+        return v
+    import glob as _glob
+    cands = [os.path.expanduser("~/.Xauthority")]
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        cands += _glob.glob(os.path.join(runtime, "xauth_*"))
+    try:
+        uid = os.getuid()
+    except AttributeError:
+        uid = None
+    if uid is not None:
+        cands += _glob.glob("/run/user/%s/xauth_*" % uid)
+    for c in cands:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
+def _probe_display():
+    """推断 X DISPLAY（:0 等）：环境没有时按 /tmp/.X11-unix 的 socket 推。
+
+    桌面图标启动一般带 DISPLAY；但某些启动链（如经 sh 包装丢失、或
+    Wayland 会话的 fallback）可能没有。X 服务器在跑就有 socket。
+    返回 None 表示本机没有 X（纯 Wayland 场景交给 WAYLAND_DISPLAY）。
+    """
+    v = os.environ.get("DISPLAY")
+    if v:
+        return v
+    import glob as _glob
+    nums = []
+    for p in _glob.glob("/tmp/.X11-unix/X[0-9]*"):
+        tail = p.rsplit("/X", 1)[-1]
+        if tail.isdigit():
+            nums.append(int(tail))
+    if not nums:
+        return None
+    return ":%d" % min(nums)
+
+
+def elev_log_path():
+    """提权子进程的环境快照/就绪标记路径（父进程侧调用后由 pkexec env 注入）。
+
+    默认按父进程 pid 生成唯一文件（<临时目录>/hd-doc-elevated-<pid>.log）：
+    两次并发提权不会互相冲掉对方的标记。HDTUNE_ELEV_LOG 可显式指定
+    （调试/测试/固定路径排查用）。
+    """
+    p = os.environ.get("HDTUNE_ELEV_LOG")
+    if p:
+        return p
+    return os.path.join(tempfile.gettempdir(),
+                        "hd-doc-elevated-%d.log" % os.getpid())
+
+
+def elev_ready(path):
+    """就绪标记是否已出现：提权实例窗口显示后会向快照文件追加 READY 行。
+
+    父进程必须能区分 pkexec 存活的两种含义——"用户还在输密码"与"授权
+    已通过、提权实例正在起窗口"。只看 pkexec 存活无法区分，早期版本用
+    固定 2.5 秒超时猜测，输密码超过 2.5 秒时父进程先退出、授权框跟着
+    消失（用户看到"密码没输完窗口就没了"）。有了 READY 行即可精确判定：
+    有标记 = 提权实例已接管，父进程放心退出。
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("READY"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def pkexec_gui_spawn(argv=None):
     """Linux GUI 提权：pkexec 异步启动本程序，返回 (popen, err)。
 
     popen 非 None —— 已启动，调用方轮询它的存活来判断授权是否成功：
         pkexec 在授权期间一直存活（授权成功 = 提权实例正在运行）；
         授权被取消/失败时 pkexec 会很快退出（poll() 拿到退出码）。
+        注意"存活"有两种含义（还在输密码 / 实例已起窗口），调用方应结合
+        elev_ready(elev_log_path()) 的就绪标记区分，不要用短超时猜测。
     popen 为 None 且 err 为 None —— 当前已是 root，无需提权；
     popen 为 None 且 err 非 None —— 启动失败（无 pkexec / 异常）。
 
     为什么不用同步 sudo：GUI 场景（无控制终端）下 sudo 会因
     "no tty present and no askpass program" 失败，且 subprocess.call
     会阻塞界面线程直到子进程结束。
+
+    环境透传：pkexec 会清掉绝大多数环境变量，root 实例要连当前显示
+    服务必须显式带回来：
+      - DISPLAY / XAUTHORITY：X11 会话必需。XAUTHORITY 环境里常缺
+        （见 _probe_x_authority），必须探测补齐，否则授权框闪退；
+      - WAYLAND_DISPLAY / XDG_RUNTIME_DIR：UKUI/Kylin 的 Wayland 会话；
+      - DBUS_SESSION_BUS_ADDRESS：有则带（通知/桌面组件可能用）；
+      - HDTUNE_ELEV_LOG：子进程把启动环境快照写进该文件、窗口起来后
+        追加 READY 行（父进程据此判定"可以退出让位"）——Qt 平台插件
+        失败是 C++ qFatal，Python 层留不下任何痕迹，只能靠子进程自己
+        在装配 Qt 之前把现场落盘（见 HD_Doc.py 的 _dump_elev_env /
+        mark_elev_ready）。
     """
     argv = list(sys.argv if argv is None else argv)
     try:
@@ -629,14 +732,26 @@ def pkexec_gui_spawn(argv=None):
     else:
         prog = sys.executable or "python3"
         rest = [os.path.abspath(argv[0])] + argv[1:]
-    # pkexec 默认不继承图形会话变量（否则 root 进程连不上 X/Wayland）；
-    # DISPLAY/XAUTHORITY/WAYLAND_DISPLAY/XDG_RUNTIME_DIR 需显式透传
+    # 显式白名单透传（pkexec 默认不继承图形会话变量）
     env_args = []
-    for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
-              "XDG_RUNTIME_DIR"):
+    display = _probe_display()
+    if display:
+        env_args.append("DISPLAY=%s" % display)
+    xauth = _probe_x_authority()
+    if xauth:
+        env_args.append("XAUTHORITY=%s" % xauth)
+    for k in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
         v = os.environ.get(k)
         if v:
             env_args.append("%s=%s" % (k, v))
+    # 子进程环境快照/就绪标记落点（root 可写、普通用户可读，方便回传排查）。
+    # 先删旧文件：pid 复用或上一轮崩溃残留的 READY 行会被误判成本轮已就绪。
+    log_path = elev_log_path()
+    try:
+        os.unlink(log_path)
+    except OSError:
+        pass
+    env_args.append("HDTUNE_ELEV_LOG=%s" % log_path)
     try:
         popen = subprocess.Popen(
             [pkexec, "env"] + env_args + [prog] + rest,

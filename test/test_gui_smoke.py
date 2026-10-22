@@ -424,13 +424,22 @@ class _FakePopen:
     def __init__(self, rc=None):
         self.returncode = rc
         self.pid = 4242
+        self.terminated = False
 
     def poll(self):
         return self.returncode
 
+    def terminate(self):
+        self.terminated = True
+
 
 _saved_iswin = H.IS_WIN
 H.IS_WIN = False
+# 模拟"桌面会话"：offscreen 环境无 DISPLAY，预检（_probe_display）会
+# 拦截提权——测试提权流程本身，故统一打桩成有显示环境。
+_display_patch = _mock.patch.object(H.core, "_probe_display",
+                                    return_value=":0")
+_display_patch.start()
 try:
     with _mock.patch.object(H, "list_drives", return_value=[
             {"index": 0, "path": "/dev/sda", "size": 1000204886016,
@@ -460,22 +469,60 @@ try:
     assert "126" in banner and "Elevation" in banner, banner
     print("Elevation cancelled OK (window kept, banner shows exit 126)")
 
-    # ---- 场景 2：pkexec 存活（授权进行中）→ 轮询期满退出本窗口 ----
-    # Qt 只允许一个 QApplication 实例、窗口可建多个：用记录器替换
-    # _exit_now（验证"会退出"而不真销毁）
+    # ---- 场景 2：pkexec 存活但无就绪标记 → 继续等，绝不退出 ----
+    # 回归（Ubuntu 实测："密码还没输完提权窗口就消失了"）：pkexec 存活
+    # 有两种含义——用户还在输密码 / 授权已通过实例正起窗口。只看存活无法
+    # 区分，早期版本轮询 3 秒没退出就替用户移交，输密码慢一点授权框跟着
+    # 闪退。现在只有快照文件出现 READY 行（core.elev_ready）才移交。
     exited = []
     _real_exit_now = app._exit_now
     app._exit_now = lambda: exited.append(True)
+    _mk_dir = tempfile.mkdtemp(prefix="HD_Doc_smoke_elev_")
+    _marker = os.path.join(_mk_dir, "marker.log")
+    os.environ["HDTUNE_ELEV_LOG"] = _marker
+    _fake = _FakePopen(None)
     with _mock.patch.object(H.core, "pkexec_gui_spawn",
-                            return_value=(_FakePopen(None), None)):
+                            return_value=(_fake, None)):
         app._relaunch_elevated()
-    app._pkexec_polls = 1     # 只轮一次即移交（不必真等 3 秒）
-    time.sleep(0.25)
+    time.sleep(0.4)          # 轮询定时器转两三次，无标记 → 不退
     _pe()
-    assert exited, "授权进行中应在轮询期满后退出本窗口（移交提权实例）"
+    assert not exited, "无就绪标记时不得退出（用户可能还在输密码）"
+    assert app.isVisible(), "等待授权期间窗口必须保留"
     assert "Waiting for authorization" in app.lbl_banner.text()
+    print("Elevation wait OK (no READY marker → window kept waiting)")
+
+    # ---- 场景 2b：超时仍未就绪 → 保留窗口 + 超时提示，pkexec 被终止 ----
+    os.environ["HDTUNE_ELEVATE_WAIT"] = "0.5"
+    exited.clear()
+    _fake2 = _FakePopen(None)
+    with _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(_fake2, None)):
+        app._relaunch_elevated()
+    time.sleep(1.2)          # 0.5s 宽限 + 150ms 轮询粒度
+    _pe()
+    assert not exited, "超时是保留窗口提示，不是闪退"
+    assert app.isVisible()
+    assert _fake2.terminated, "超时应终止 pkexec（关掉授权框）"
+    assert "timed out" in app.lbl_banner.text(), app.lbl_banner.text()
+    os.environ.pop("HDTUNE_ELEVATE_WAIT", None)
+    print("Elevation timeout OK (window kept, banner hints, pkexec killed)")
+
+    # ---- 场景 2c：就绪标记出现 → 移交，退出本窗口 ----
+    exited.clear()
+    with open(_marker, "a", encoding="utf-8") as _f:
+        _f.write("READY pid=1 t=0\n")
+    _fake3 = _FakePopen(None)
+    with _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(_fake3, None)):
+        app._relaunch_elevated()
+    time.sleep(0.4)          # 标记已在，下一轮轮询即移交
+    _pe()
+    assert exited, "出现就绪标记后应移交提权实例（退出本窗口）"
+    assert not _fake3.terminated, "已移交不得再终止 pkexec"
     app._exit_now = _real_exit_now
-    print("Elevation handover OK (window exits once authorization is up)")
+    shutil.rmtree(_mk_dir, ignore_errors=True)
+    os.environ.pop("HDTUNE_ELEV_LOG", None)
+    print("Elevation handover OK (READY marker → this window exits)")
 
     # ---- 场景 3：无 pkexec → 横幅报错，窗口保留 ----
     with _mock.patch.object(H.core, "pkexec_gui_spawn",
@@ -486,30 +533,73 @@ try:
     assert "pkexec not found" in app.lbl_banner.text()
     print("No-pkexec OK (banner error, window kept)")
 
+    # ---- 场景 3b：无显示环境 → 预检拦截，pkexec 都不发起 ----
+    # 回归：Kylin/无 X 会话下 root 实例必然连不上显示服务（Qt qFatal
+    # 秒退 → 授权框闪退），预检直接跳过并提示，不弹注定失败的框
+    with _mock.patch.object(H.core, "_probe_display", return_value=None), \
+         _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(None, "should not be called")) as _sp:
+        app._relaunch_elevated()
+    _pe()
+    assert app.isVisible()
+    assert "No graphical display" in app.lbl_banner.text(), \
+        app.lbl_banner.text()
+    assert not _sp.called, "无显示环境时不应发起 pkexec"
+    print("No-display precheck OK (pkexec not spawned, window kept)")
+
     # ---- 场景 4：ensure_admin_at_startup 在 Linux 也发起提权 ----
+    # 4a 授权取消（pkexec 126）→ False（标准权限继续启动）
     with _mock.patch.object(H, "is_admin", return_value=False), \
          _mock.patch.object(H, "auto_elevate_enabled", return_value=True), \
          _mock.patch.object(H.core, "pkexec_gui_spawn",
                             return_value=(_FakePopen(126), None)):
         assert H.ensure_admin_at_startup() is False, \
             "授权失败应返回 False（标准权限继续启动）"
+
+    # 4b 提权实例已就绪（READY 标记）→ True（本进程退出让位）。
+    # 回归：早期版本用 2.5 秒固定超时猜"授权进行中"，输密码超过 2.5 秒
+    # 父进程先退出、授权框跟着消失（"密码没输完窗口就没了"）；现在以
+    # 就绪标记为准，输密码再慢也不会误退。
+    _mk_dir2 = tempfile.mkdtemp(prefix="HD_Doc_smoke_elev2_")
+    _mk2 = os.path.join(_mk_dir2, "startup.log")
+    with open(_mk2, "w", encoding="utf-8") as _f:
+        _f.write("READY pid=7 t=0\n")
+    os.environ["HDTUNE_ELEV_LOG"] = _mk2
+    with _mock.patch.object(H, "is_admin", return_value=False), \
+         _mock.patch.object(H, "auto_elevate_enabled", return_value=True), \
+         _mock.patch.object(H.core, "pkexec_gui_spawn",
+                            return_value=(_FakePopen(None), None)):
+        assert H.ensure_admin_at_startup() is True, \
+            "出现就绪标记应返回 True（提权实例接管，本进程退出）"
+
+    # 4c 超时仍未就绪 → False（终止 pkexec，标准权限继续启动）
     _clock = [0.0]
 
     def _fake_monotonic():
         _clock[0] += 1.0
         return _clock[0]
 
+    os.remove(_mk2)                      # 清掉 4b 的标记，模拟"还没就绪"
+    os.environ["HDTUNE_ELEVATE_WAIT"] = "0.5"
+    _fake4 = _FakePopen(None)
     with _mock.patch.object(H, "is_admin", return_value=False), \
          _mock.patch.object(H, "auto_elevate_enabled", return_value=True), \
          _mock.patch.object(H.time, "sleep", lambda s: None), \
          _mock.patch.object(H.time, "monotonic", _fake_monotonic), \
          _mock.patch.object(H.core, "pkexec_gui_spawn",
-                            return_value=(_FakePopen(None), None)):
-        assert H.ensure_admin_at_startup() is True, \
-            "授权进行中应返回 True（提权实例接管，本进程退出）"
-    print("ensure_admin_at_startup(Linux) OK (cancel→False, auth→True)")
+                            return_value=(_fake4, None)):
+        assert H.ensure_admin_at_startup() is False, \
+            "超时未就绪应返回 False（照常启动，不干等）"
+    assert _fake4.terminated, "超时应终止 pkexec"
+    os.environ.pop("HDTUNE_ELEVATE_WAIT", None)
+    shutil.rmtree(_mk_dir2, ignore_errors=True)
+    print("ensure_admin_at_startup(Linux) OK "
+          "(cancel→False, READY→True, timeout→False)")
 finally:
     H.IS_WIN = _saved_iswin
+    _display_patch.stop()
+    os.environ.pop("HDTUNE_ELEV_LOG", None)
+    os.environ.pop("HDTUNE_ELEVATE_WAIT", None)
     app._refresh_drives()
     _pe()
 

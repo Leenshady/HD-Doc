@@ -640,6 +640,179 @@ check("parse_segment_size 英文整盘", H.parse_segment_size("Whole disk at onc
 check("parse_segment_size 中文整盘", H.parse_segment_size("整盘一次（最快）"), None)
 check("parse_segment_size 4G", H.parse_segment_size("4G"), 4 * 1024 ** 3)
 
+# ---------- pkexec 提权环境探测：DISPLAY/XAUTHORITY 补齐 ----------
+# 回归（Kylin 实测）：桌面图标启动的环境通常没有 XAUTHORITY，未探测
+# 补齐时 pkexec 提权后 root 读不到用户 authority → 连不上 X → Qt
+# 平台插件 C++ qFatal 秒退 → 授权框 2 秒闪退。探测函数必须兜底。
+import glob as _glob_mod
+import tempfile as _tempfile2
+import shutil as _shutil2
+
+_saved_env = {k: os.environ.get(k) for k in
+              ("DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR",
+               "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
+               "HDTUNE_ELEV_LOG")}
+try:
+    for _k in _saved_env:
+        os.environ.pop(_k, None)
+
+    os.environ["DISPLAY"] = ":7"
+    check("probe_display 环境优先", H._probe_display(), ":7")
+    os.environ.pop("DISPLAY")
+    _orig_glob = _glob_mod.glob
+    _glob_mod.glob = lambda p: (["/tmp/.X11-unix/X1", "/tmp/.X11-unix/X0"]
+                                if "X11-unix" in p else [])
+    check("probe_display 按 socket 推断取小编号", H._probe_display(), ":0")
+    _glob_mod.glob = lambda p: []
+    check("probe_display 无 X 返回 None", H._probe_display(), None)
+    _glob_mod.glob = _orig_glob
+
+    os.environ["XAUTHORITY"] = "/tmp/xa-env"
+    check("probe_x_authority 环境优先", H._probe_x_authority(), "/tmp/xa-env")
+    os.environ.pop("XAUTHORITY")
+    _orig_isfile = os.path.isfile
+    os.path.isfile = lambda p: p.endswith(".Xauthority")
+    check("probe_x_authority 家目录兜底", H._probe_x_authority(),
+          os.path.expanduser("~/.Xauthority"))
+    os.path.isfile = lambda p: False
+    os.environ["XDG_RUNTIME_DIR"] = "/run/user/1000"
+    _glob_mod.glob = lambda p: (["/run/user/1000/xauth_abc"]
+                                if p.startswith("/run/user/1000") else [])
+    os.path.isfile = lambda p: p.endswith("xauth_abc")
+    check("probe_x_authority runtime 兜底", H._probe_x_authority(),
+          "/run/user/1000/xauth_abc")
+    _glob_mod.glob = lambda p: []
+    os.path.isfile = lambda p: False
+    check("probe_x_authority 找不到返回 None", H._probe_x_authority(), None)
+    _glob_mod.glob = _orig_glob
+    os.path.isfile = _orig_isfile
+
+    # pkexec_gui_spawn 的命令构造（Popen/which/探测全打桩）
+    _orig_which, _orig_popen = H.shutil.which, H.subprocess.Popen
+    _orig_pd, _orig_px = H._probe_display, H._probe_x_authority
+    _captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kw):
+            _captured["cmd"] = cmd
+            _captured["kw"] = kw
+            self.pid = 4242
+            self.returncode = None
+
+        def poll(self):
+            return None
+
+    H.shutil.which = lambda n: "/usr/bin/pkexec"
+    H._probe_display = lambda: ":0"
+    H._probe_x_authority = lambda: "/home/u/.Xauthority"
+    H.subprocess.Popen = _FakePopen
+    try:
+        _popen, _err = H.pkexec_gui_spawn(["python3", "HD_Doc.py"])
+        check("pkexec_spawn 启动成功", (_popen is not None, _err),
+              (True, None))
+        _cmd = _captured["cmd"]
+        check("pkexec 命令形态（pkexec env ... prog）",
+              (_cmd[0], _cmd[1]), ("/usr/bin/pkexec", "env"))
+        check("DISPLAY 透传", "DISPLAY=:0" in _cmd, True)
+        check("XAUTHORITY 探测值透传",
+              "XAUTHORITY=/home/u/.Xauthority" in _cmd, True)
+        check("HDTUNE_ELEV_LOG 注入",
+              any(c.startswith("HDTUNE_ELEV_LOG=") for c in _cmd), True)
+        check("HDTUNE_ELEV_LOG 注入的是唯一快照路径",
+              "HDTUNE_ELEV_LOG=%s" % H.elev_log_path() in _cmd, True)
+        # 残留清理：上一轮崩溃留下的 READY 行不得被误判成本轮已就绪
+        _stale = H.elev_log_path()
+        with open(_stale, "w", encoding="utf-8") as _f:
+            _f.write("READY pid=1 t=0\n")
+        check("spawn 前快照已就绪", H.elev_ready(_stale), True)
+        H.pkexec_gui_spawn(["python3", "HD_Doc.py"])
+        check("spawn 会清掉残留 READY 标记", H.elev_ready(_stale), False)
+        check("目标程序参数在末尾",
+              (_cmd[-1], _cmd[-2].endswith("python3")), ("HD_Doc.py", True))
+        check("start_new_session 脱离进程组",
+              _captured["kw"].get("start_new_session"), True)
+        # root：直接 (None, None)
+        _orig_geteuid = getattr(H.os, "geteuid", None)
+        H.os.geteuid = lambda: 0
+        try:
+            check("root 时不发起提权", H.pkexec_gui_spawn(), (None, None))
+        finally:
+            if _orig_geteuid is None:
+                del H.os.geteuid
+            else:
+                H.os.geteuid = _orig_geteuid
+        # 无 pkexec：报错不炸
+        H.shutil.which = lambda n: None
+        _p2, _e2 = H.pkexec_gui_spawn()
+        check("无 pkexec 时报错不崩", (_p2, _e2 is not None), (None, True))
+    finally:
+        H.shutil.which = _orig_which
+        H.subprocess.Popen = _orig_popen
+        H._probe_display = _orig_pd
+        H._probe_x_authority = _orig_px
+
+    # 子进程环境快照（HD_Doc._dump_elev_env）：Qt qFatal 的唯一现场
+    import HD_Doc as _Entry
+    _snap_dir = _tempfile2.mkdtemp(prefix="HD_Doc_elev_")
+    try:
+        _snap = os.path.join(_snap_dir, "elev.log")
+        os.environ["DISPLAY"] = ":0"
+        os.environ["HDTUNE_ELEV_LOG"] = _snap
+        _Entry._dump_elev_env()
+        _txt = open(_snap, encoding="utf-8").read()
+        check("快照含 uid/euid 行", "uid=" in _txt and "euid=" in _txt, True)
+        check("快照含 DISPLAY 现场", "DISPLAY=:0" in _txt, True)
+        check("快照含 argv", "argv=" in _txt, True)
+        os.environ.pop("HDTUNE_ELEV_LOG")
+        _Entry._dump_elev_env()               # 无变量 → 空操作
+        check("无 HDTUNE_ELEV_LOG 时不写文件", os.path.exists(_snap), True)
+        os.environ.pop("DISPLAY")
+    finally:
+        _shutil2.rmtree(_snap_dir, ignore_errors=True)
+
+    # ---- 就绪标记协议：elev_log_path / elev_ready / mark_elev_ready ----
+    # 回归（Ubuntu/Kylin 实测）：父进程曾用固定 2.5 秒超时猜测"授权进行
+    # 中"，输密码超过 2.5 秒父进程先退出、授权框跟着消失。现在父进程等
+    # 提权实例窗口起来写入的 READY 行（elev_ready）才退出，输密码再慢
+    # 也不会闪退；这些函数是该协议的骨架，必须有单测固化。
+    _mk_dir = _tempfile2.mkdtemp(prefix="HD_Doc_ready_")
+    try:
+        _mk = os.path.join(_mk_dir, "marker.log")
+        check("elev_log_path 环境变量优先",
+              (lambda: (os.environ.__setitem__("HDTUNE_ELEV_LOG", _mk),
+                        H.elev_log_path())[1])(), _mk)
+        os.environ.pop("HDTUNE_ELEV_LOG", None)
+        _dflt = H.elev_log_path()
+        check("elev_log_path 默认路径含 pid 且落在可写目录",
+              (_dflt.endswith("hd-doc-elevated-%d.log" % os.getpid()),
+               os.path.isdir(os.path.dirname(_dflt))), (True, True))
+        check("elev_ready 文件不存在 → False", H.elev_ready(_mk), False)
+        with open(_mk, "w", encoding="utf-8") as _f:
+            _f.write("elevated instance snapshot\n  DISPLAY=:0\n")
+        check("elev_ready 只有快照无 READY → False", H.elev_ready(_mk), False)
+        with open(_mk, "a", encoding="utf-8") as _f:
+            _f.write("READY pid=999 t=1.5\n")
+        check("elev_ready 出现 READY 行 → True", H.elev_ready(_mk), True)
+        # 子进程侧：mark_elev_ready 追加 READY；无变量时空操作
+        os.environ["HDTUNE_ELEV_LOG"] = _mk
+        _Entry.mark_elev_ready()
+        _txt2 = open(_mk, encoding="utf-8").read()
+        check("mark_elev_ready 追加 READY 行",
+              _txt2.count("READY"), 2)
+        _noenv = os.path.join(_mk_dir, "noenv.log")
+        os.environ.pop("HDTUNE_ELEV_LOG")
+        _Entry.mark_elev_ready()               # 无变量 → 不写任何文件
+        check("无 HDTUNE_ELEV_LOG 时 mark_elev_ready 空操作",
+              os.path.exists(_noenv), False)
+    finally:
+        _shutil2.rmtree(_mk_dir, ignore_errors=True)
+finally:
+    for _k, _v in _saved_env.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+
 # ---------- 运行日志：单文件、上限截断、开关、异常堆栈 ----------
 _log_tmp = _tempfile.mkdtemp(prefix="HD_Doc_log_")
 try:
