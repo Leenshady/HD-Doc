@@ -119,17 +119,30 @@ check("1TB 自动块大小段数=233", len(segs_auto), 233)
 # 容量未知时（bug 场景）必须仍然退化为单段但由 GUI/CLI 预警
 check("容量未知退化为单段", H.plan_segments(None, 4 << 30, 4 << 20), [(0, None)])
 
-# ---------- plan_quick_segments：快速扫描抽样布点 ----------
+# ---------- plan_quick_segments：快速扫描按分段设置布点 ----------
+# 快速扫描与全段扫描共用同一套分段设置（用户反馈"取消固定 256 段，按照
+# 分段设置分段"）：显式分段大小时严格按它分区，段数=⌈容量/段大小⌉，不再
+# 为压段数偷偷翻倍（旧版 4G 段被翻倍成 8G，1TB 盘只剩 117 区）。
 G = 1024 ** 3
 q_segs = H.plan_quick_segments(HDD_1TB, 4 * G, 16 << 20, 4 << 20)
-check("快速扫描区域数=117（4G×233 超上限，放大到 8G）", len(q_segs), 117)
-check("快速扫描区域跨度 8GiB", q_segs[1][0] - q_segs[0][0], 8 * G)
+check("快速扫描 1TB/4G=233 区（遵循分段设置）", len(q_segs), 233)
+check("快速扫描区域跨度 4GiB", q_segs[1][0] - q_segs[0][0], 4 * G)
 check("快速扫描每区抽样 16MiB", q_segs[0][1], 16 << 20)
 check("快速扫描 offset 全部 bs 对齐", all(o % (4 << 20) == 0 for o, _ in q_segs), True)
 check("快速扫描末区不越界", q_segs[-1][0] + q_segs[-1][1] <= HDD_1TB, True)
-check("快速扫描覆盖 117×16MiB", sum(s for _, s in q_segs), 117 * (16 << 20))
+check("快速扫描覆盖 233×16MiB", sum(s for _, s in q_segs), 233 * (16 << 20))
 check("快速扫描容量未知退化为整盘", H.plan_quick_segments(0, 4 * G, 16 << 20, 4 << 20),
       [(0, None)])
+# 段数超硬上限才翻倍兜底：16TB + 512M = 32768 区 → 放大到 16G×1024 区
+q_cap = H.plan_quick_segments(16 * 1024 * G, 512 << 20, 16 << 20, 4 << 20)
+check("快速扫描段数失控翻倍进硬上限", len(q_cap), H.QUICK_HARD_MAX_REGIONS)
+check("快速扫描翻倍后区域 16GiB", q_cap[1][0] - q_cap[0][0], 16 * G)
+# 未指定分段大小（GUI"整盘一次"）：偶数分区且在上限内；对齐后复算段数
+# （1TB/128 区=7.8MB，对齐 4M 后段数会暴涨，须继续翻倍到 8G 级）
+q_auto = H.plan_quick_segments(HDD_1TB, None, 16 << 20, 4 << 20)
+check("快速扫描未指定分段=128 区内", len(q_auto) <= H.QUICK_MAX_REGIONS, True)
+check("快速扫描未指定分段区域不小于容量/128",
+      q_auto[1][0] - q_auto[0][0] >= -(-HDD_1TB // H.QUICK_MAX_REGIONS), True)
 q_small = H.plan_quick_segments(64 << 20, None, 16 << 20, 4 << 20)
 check("快速扫描无分段参数时区域不小于块大小", len(q_small), 16)
 check("快速扫描区域=块大小（64MiB/16 区被 bs 兜底）", q_small[0][1], 4 << 20)
@@ -142,69 +155,13 @@ check("快速扫描末区偏移 80MiB", q_last[-1][0], 80 << 20)
 _bs2, _segs2, _samp2 = H.quick_scan_setup(HDD_1TB, 64 << 20, 4 * G, 16 << 20)
 check("quick_scan_setup 块大小缩到抽样大小", _bs2, 16 << 20)
 check("quick_scan_setup 抽样仍 16MiB", _samp2, 16 << 20)
+check("quick_scan_setup 按分段设置分区", len(_segs2), 233)
 check("quick_scan_setup 容量未知退化", H.quick_scan_setup(0, 4 << 20, 4 * G, 0),
       (4 << 20, [(0, None)], 0))
-
-# ---------- plan_cell_segments：默认固定按热力图格数切段 ----------
-# GUI 分段下拉已移除：默认固定 MAP_CELLS 段，一段对应一格。
-# 曾用"段大小=⌈容量/格数⌉再对齐 bs"（plan_segments 路径），1TB 盘会切出
-# 257 段（对齐截断让末段又凑一段）——用户反馈"分段没有固定分 256 段"，
-# 改为先定段数再对齐，余数并进末段。
-check("默认分段 1TB=256 段", len(H.plan_cell_segments(HDD_1TB, 256, 4 << 20)), 256)
-segs_def = H.sanitize_segments(H.plan_cell_segments(HDD_1TB, 256, 4 << 20), 4 << 20)
-check("默认分段 1TB 段数=256（sanitize 后不变）", len(segs_def), 256)
-check("默认分段 1TB 覆盖全盘", sum(s for _, s in segs_def), HDD_1TB)
-check("默认分段 1TB 每段>=bs", all(s >= (4 << 20) for _, s in segs_def), True)
-check("默认分段 1TB 前 255 段等长",
-      len(set(s for _o, s in segs_def[:255])), 1)
-check("默认分段 1TB offset 全部 bs 对齐",
-      all(o % (4 << 20) == 0 for o, _s in segs_def), True)
-check("默认分段 1TB 段大小=⌊1TB/256⌋ 对齐 4MiB",
-      segs_def[0][1], (HDD_1TB // 256 // (4 << 20)) * (4 << 20))
-check("默认分段 512MB=256 段×2MiB",
-      (len(H.plan_cell_segments(512 << 20)), H.plan_cell_segments(512 << 20)[0]),
-      (256, (0, 2 << 20)))
-check("默认分段末段不短于普通段",
-      H.plan_cell_segments(HDD_1TB, 256, 4 << 20)[-1][1]
-      >= H.plan_cell_segments(HDD_1TB, 256, 4 << 20)[0][1], True)
-# 盘比 256 个 IO 块还小（8MB/1M → 32KB<块）：退化为整盘一次
-check("8MB 盘默认分段退化为整盘一次",
-      H.plan_cell_segments(8 << 20, 256, 1 << 20), [(0, None)])
-check("默认分段容量未知=整盘一次", H.plan_cell_segments(None), [(0, None)])
-check("默认分段容量 0=整盘一次", H.plan_cell_segments(0), [(0, None)])
-check("默认分段格数为 0=整盘一次", H.plan_cell_segments(HDD_1TB, 0, 4 << 20),
-      [(0, None)])
-check("默认分段无 bs 时 256 等分", H.plan_cell_segments(1000, 256, None)[0],
-      (0, 3))
-# ---------- plan_quick_cell_regions：快速扫描默认按格数固定布点 ----------
-# 用户反馈"测试扫描分成 117 段，而不是 256 段"：旧默认 4G 区域超
-# QUICK_MAX_REGIONS 被翻倍成 8G，1TB 盘只剩 117 区。现在区域数同样
-# 固定 MAP_CELLS，与热力图格一一对应。
-q_def_1t = H.plan_quick_cell_regions(HDD_1TB, 256, 16 << 20, 4 << 20)
-check("1TB 盘快速扫描=256 区（不再 117）", len(q_def_1t), 256)
-check("1TB 盘快速扫描每区 16MiB 样本", q_def_1t[0][1], 16 << 20)
-check("1TB 盘快速扫描 offset 对齐 4MiB",
-      all(o % (4 << 20) == 0 for o, _s in q_def_1t), True)
-check("1TB 盘快速扫描末区样本完全在盘内",
-      q_def_1t[-1][0] + q_def_1t[-1][1] <= HDD_1TB, True)
-check("1TB 盘快速扫描末区贴近盘尾（第 256 区）",
-      HDD_1TB - q_def_1t[-1][0] < 2 * 3904897024, True)
-# 小盘：样本被区域跨度截断（每格一个样本的语义不变，盘小读完整盘也很快）
-q_def_512 = H.plan_quick_cell_regions(512 << 20, 256, 16 << 20, 1 << 20)
-check("512MB 盘快速扫描=256 区", len(q_def_512), 256)
-check("512MB 盘快速扫描样本被截到区域大小 2MiB", q_def_512[0][1], 2 << 20)
-check("512MB 盘快速扫描样本=区域大小（整格读）",
-      sum(s for _, s in q_def_512), 512 << 20)
-# 极小盘（区域 < 一个 IO 块）退化为整盘一次，但带显式 size（覆盖率可算）
-check("8MB 盘快速扫描退化为整盘一次（带 size）",
-      H.plan_quick_cell_regions(8 << 20, 256, 16 << 20, 1 << 20), [(0, 8 << 20)])
-check("快速扫描容量未知退化为整盘一次",
-      H.plan_quick_cell_regions(0, 256, 16 << 20, 4 << 20), [(0, None)])
-check("快速扫描默认参数（无 bs）256 区",
-      len(H.plan_quick_cell_regions(1 << 30)), 256)
-# quick_scan_setup 收口：seg_bytes=None → 按格数布点
+# quick_scan_setup 收口：seg_bytes=None（GUI"整盘一次"未指定分段大小）→
+# 偶数分区（≤QUICK_MAX_REGIONS 区），不再固定按格数布 256 区
 _bs3, _segs3, _samp3 = H.quick_scan_setup(HDD_1TB, 4 << 20, None, 16 << 20)
-check("quick_scan_setup 默认 256 区", len(_segs3), 256)
+check("quick_scan_setup 未指定分段=128 区内", len(_segs3) <= H.QUICK_MAX_REGIONS, True)
 check("quick_scan_setup 抽样 16MiB", _samp3, 16 << 20)
 check("quick_scan_setup 容量未知退化",
       H.quick_scan_setup(0, 4 << 20, None, 0), (4 << 20, [(0, None)], 0))
@@ -305,9 +262,10 @@ check("1TB/4G: 格全覆盖（段跨度并集覆盖全部格）",
 
 # ---------- 快速扫描按区域跨度点亮：区域跨度必须铺满全部格 ----------
 # 用户实际场景（931.5GB 盘、4G 分段、16MB 抽样、4MB 块，见运行日志）：
-# 117 个区域每区只读开头 16MB。若按抽样大小点亮，16MB 只覆盖约 1 格
-# （每格 3.9GB）→ 约 117/256 格有数据、其余永久灰（"有的块保持灰色"）；
-# 按区域跨度点亮（区域才是取样单位）则整盘铺满、无灰格。
+# 快速扫描按分段设置布 233 个区域（1TB/4G，遵循分段下拉），每区只读开头
+# 16MB。若按抽样大小点亮，16MB 只覆盖约 1 格（每格 3.9GB）→ 少数格永久
+# 灰（"有的块保持灰色"）；按区域跨度点亮（区域才是取样单位）则整盘铺满、
+# 无灰格。
 _qcov = set()
 for _i, (_o, _s) in enumerate(q_segs):
     _nxt = q_segs[_i + 1][0] if _i + 1 < len(q_segs) else HDD_1TB

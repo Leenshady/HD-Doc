@@ -31,17 +31,10 @@ H.Messagebox.show_error = lambda *a, **k: None
 
 app.var_target.set(BIG)
 app.var_fio.set(FIO)
-# 分段下拉已恢复（默认 4G），但快速扫描的区域布点与分段大小无关：
-# 固定按格数布 256 区（区域数不随容量漂移）。本场景要覆盖"多区域整区
-# 点亮"，白盒把默认布点临时换成 8 个 64M 区域（512MB 盘 → 8 区，
-# 每区 16M 样本）。注意 patch 点是 core 模块的函数
-# （quick_scan_setup 在 core 内按全局名调用它，patch GUI 模块的绑定
-# 无效——与 patch 常量不同）
-import HD_Doc_core as HC
-_QUICK_REGIONS_ORIG = HC.plan_quick_cell_regions
-def _fake_quick_regions(total, n_cells=256, sample_bytes=16 << 20, bs=None):
-    return [(i * (64 << 20), 16 << 20) for i in range(total // (64 << 20))]
-HC.plan_quick_cell_regions = _fake_quick_regions
+# 快速扫描与全段扫描共用同一套分段设置（用户反馈"取消固定 256 段，按照
+# 分段设置分段"）：分段下拉设 64M → 512MB 盘切 8 区，每区抽 16M 样本，
+# 覆盖"多区域整区点亮"场景（区头抽样结果覆盖整区点亮热力图）
+app.var_seg.set("64M")
 
 
 def _drain(a, limit=15):
@@ -217,7 +210,6 @@ app.destroy()
 root.destroy()      # 连同隐藏 root 一起销毁：ttkbootstrap 的 Style 是进程级
                     # 单例，旧解释器还活着时新 Window 建不出主题对象
                     # （_theme_objects 为空 → KeyError），与 test_gui_stop 相同做法
-HC.plan_quick_cell_regions = _QUICK_REGIONS_ORIG   # 还原默认（阶段二为全段扫描，不用它）
 
 # ---- 第二阶段：普通全段扫描（回归：_run_worker 曾在工作线程读 Tk 变量
 # 导致 "main thread is not in main loop"，快速/全段两条路径都要覆盖）----

@@ -97,13 +97,12 @@ def cli_main(args):
         segments = [seg]
     else:
         # 分段默认与 GUI 下拉一致：未指定时 4G（显式 0/none/整盘 → 整盘
-        # 一次，显式大小 → 按大小切）。快速扫描的区域布点与分段大小无关：
-        # 固定按热力图格数布 256 区（区域数不随容量漂移——4G 区域超上限
-        # 翻倍后 1TB 盘只剩 117 区，用户反馈"不是 256 段"）。
+        # 一次，显式大小 → 按大小切）。快速扫描与全段扫描共用同一套分段
+        # 设置：按分段大小把磁盘切成若干区域，每区只读开头样本（用户反馈
+        # "取消固定 256 段，按照分段设置分段"——旧版快速扫描固定按格数
+        # 布 256 区，与 --segment-gb 脱节）。
         quick = bool(getattr(args, "quick", False))
-        if quick:
-            seg_bytes = None            # 固定 256 区布点，与 --segment-gb 无关
-        elif seg_explicit:
+        if seg_explicit:
             seg_bytes = parse_bs("%gG" % float(args.segment_gb))
         elif seg_whole:
             seg_bytes = None            # 显式整盘一次
@@ -140,8 +139,17 @@ def cli_main(args):
     if getattr(args, "quick", False) and size:
         covered = sum(s for _o, s in segments if s)
         cov_pct = covered * 100.0 / size if size else 0.0
-        print("Scan mode : quick scan, %d regions (sample %s each, covering %s, %.2f%% of capacity)"
-              % (len(segments), fmt_bytes(quick_sample), fmt_bytes(covered), cov_pct))
+        span = segments[1][0] - segments[0][0] if len(segments) > 1 else size
+        print("Scan mode : quick scan, %d regions (region %s, sample %s each, "
+              "covering %s, %.2f%% of capacity)"
+              % (len(segments), fmt_bytes(span), fmt_bytes(quick_sample),
+                 fmt_bytes(covered), cov_pct))
+        if len(segments) > 1 and seg_bytes and span > seg_bytes:
+            # 段数超硬上限被翻倍兜底：说明实际区域跨度，避免"设了 512M
+            # 怎么变成 16G 一区"的困惑
+            print("[Note] Segment size %s would create too many regions (one fio "
+                  "launch per region); quick scan regions enlarged to %s."
+                  % (fmt_bytes(seg_bytes), fmt_bytes(span)))
     else:
         print("Scan mode : %s" % ("whole disk in one pass" if len(segments) <= 1
                                   else "segmented, %d segments" % len(segments)))

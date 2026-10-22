@@ -65,26 +65,36 @@ rc = HCLI.cli_main(make_args(target="C:/nope_missing.img"))
 print("场景5 退出码 =", rc, "；提权调用次数 =", len(calls), "(期望 0)")
 assert len(calls) == 0
 
-# ---- 场景 6：快速扫描 + 已知容量镜像 → 抽样布点并实际扫描（不导出） ----
+# ---- 场景 6：快速扫描 + 已知容量镜像 → 按分段设置布点并实际扫描（不导出）----
 small = os.path.join("..", "fio_test", "it_small.img")
 if os.path.isfile(small):
     size = HC.query_target_size(small)
-    # 快速扫描区域布点与分段大小无关：固定按格数布 256 区；8MB 盘装不下
-    # 256 区（32KB/区 < 1M 块大小）→ 退化整盘一次（样本=整盘 8MB）
+    # 快速扫描与全段扫描共用同一套分段设置（用户反馈"取消固定 256 段，
+    # 按照分段设置分段"）。segment_gb=0（整盘一次/未指定大小）→ 偶数
+    # 分区：8MB 盘按 1M 块切 8 区，每区样本被区域截断成 1M
     bs, segs, sample = HC.quick_scan_setup(size, HC.parse_bs("1M", size),
                                            None, 2 * 1024 * 1024)
     print("场景6 布点: %d 样本, 抽样 %s, 首样本 %s" % (len(segs), sample, segs[0]))
-    assert len(segs) == 1 and sample == 8 * 1024 * 1024
+    assert len(segs) == 8 and sample == 1 * 1024 * 1024
     rc = HCLI.cli_main(make_args(target=small, bs="1M", quick=True,
                                  quick_sample_mb=2.0))
     print("场景6 退出码 =", rc, "(期望 0)")
     assert rc == 0
 
-    # ---- 场景 6b：全段扫描默认分段 4G（GUI 下拉默认一致；不传 --segment-gb）----
+    # ---- 场景 6b：显式分段 4G > 8MB 盘 → 合成单区，只读区头 2MB 样本 ----
+    bs, segs, sample = HC.quick_scan_setup(size, HC.parse_bs("1M", size),
+                                           4 * 1024 ** 3, 2 * 1024 * 1024)
+    assert len(segs) == 1 and sample == 2 * 1024 * 1024, (len(segs), sample)
+    rc = HCLI.cli_main(make_args(target=small, bs="1M", quick=True,
+                                 quick_sample_mb=2.0, segment_gb=4))
+    print("场景6b 退出码 =", rc, "（期望 0；4G 段合成单区，样本 2MB）")
+    assert rc == 0
+
+    # ---- 场景 6c：全段扫描默认分段 4G（GUI 下拉默认一致；不传 --segment-gb）----
     # 8MB 盘 < 4G → 单段整盘（与 GUI 选默认 4G 扫小盘的行为一致）
     rc = HCLI.cli_main(make_args(target=small, bs="1M", segment_gb=None,
                                  quick=False))
-    print("场景6b 退出码 =", rc, "（期望 0；默认 4G 分段，小盘合成 1 段）")
+    print("场景6c 退出码 =", rc, "（期望 0；默认 4G 分段，小盘合成 1 段）")
     assert rc == 0
 
     # ---- 场景 7：--export → 报告写入指定目录，且为英文 ----

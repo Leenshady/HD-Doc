@@ -150,6 +150,7 @@
   "gui.log.no_pythonw": "pythonw.exe not found; a console window may appear after elevation",
   "gui.log.bs_clamped": "Block size exceeds disk capacity; adjusted to {sz}",
   "gui.log.quick_plan": "Quick scan: {n} regions, {sample} sampled each (total {total}, {pct:.2f}% of capacity)",
+  "gui.log.quick_region_enlarged": "Quick scan: segments of {set} would create too many regions (one fio launch each); regions automatically enlarged to {actual}",
   "gui.log.quick_no_size": "Quick scan needs a known capacity to place samples evenly; capacity unknown, falling back to a single full pass",
   "gui.log.capacity_plan": "Capacity {sz} | {n} segments | about {b} blocks",
   "gui.log.no_size_map": "Could not query target capacity; the heatmap shows whole-disk aggregate stats only (no positional detail); fio will still auto-detect the device size and complete the scan",

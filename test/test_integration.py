@@ -189,6 +189,14 @@ def main():
           ("\\\\.\\PhysicalDrive0", None))
     check("_fio_target_arg: 相对路径不动", H._fio_target_arg("it_small.img"),
           ("it_small.img", None))
+    # UNC 别名（//./PhysicalDriveN）必须转回反斜杠形式再交给 fio：正斜杠
+    # 形式会让 fio 走"普通文件"分支 unlink 探测，直接 EACCES（实测
+    # errno 13, filesetup.c:151）——整盘每个分段都读失败
+    check("_fio_target_arg: UNC 设备别名转反斜杠",
+          H._fio_target_arg("//./PhysicalDrive0"),
+          ("\\\\.\\PhysicalDrive0", None))
+    check("_fio_target_arg: UNC 卷别名转反斜杠",
+          H._fio_target_arg("//./C:"), ("\\\\.\\C:", None))
 
     print("\n== 报告导出（aborted 语义 + 双语）==")
     outdir = os.path.join(BASE, "it_report")

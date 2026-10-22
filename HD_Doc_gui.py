@@ -1070,9 +1070,10 @@ class HDDocApp(ttk.Window):
         quick = bool(self.var_quick.get())
         # 分段大小可选（默认 4G）："整盘一次"（parse 返回 None）→ 单段
         # 整盘；容量未知时同样降级整盘一次（横幅提示，不弹窗）。
-        # 快速扫描的区域布点与分段大小无关：固定按热力图格数布 256 区
-        # （区域数不随容量漂移——4G 区域超上限翻倍后 1TB 盘只剩 117 区，
-        # 用户反馈），每区只读开头样本。
+        # 快速扫描与全段扫描共用同一套分段设置：按分段大小把磁盘切成
+        # 若干区域，每区只读开头样本（用户反馈"取消固定 256 段，按照
+        # 分段设置分段"——旧版快速扫描固定按格数布 256 区，与分段下拉
+        # 脱节）；分段超过容量时合成单区（只读区头样本）。
         seg_bytes = parse_segment_size(self.var_seg.get())
         if not size and seg_bytes is not None:
             # 不弹窗：降级模式说明进日志与横幅，直接继续
@@ -1082,8 +1083,16 @@ class HDDocApp(ttk.Window):
         if quick:
             if size:
                 bs, segments, quick_sample = quick_scan_setup(
-                    size, bs, None,
+                    size, bs, seg_bytes,
                     parse_bs(self.var_quick_sample.get()))
+                if (seg_bytes and len(segments) > 1
+                        and segments[1][0] - segments[0][0] > seg_bytes):
+                    # 段数超硬上限被翻倍兜底：告知用户实际区域跨度，
+                    # 避免"设了 512M 怎么变成 16G 一区"的困惑
+                    self._log("warn", "gui.log.quick_region_enlarged",
+                              set=fmt_bytes(seg_bytes),
+                              actual=fmt_bytes(segments[1][0]
+                                               - segments[0][0]))
                 self._log("info", "gui.log.quick_plan",
                           n=len(segments), sample=fmt_bytes(quick_sample),
                           total=fmt_bytes(sum(s for _o, s in segments if s)),

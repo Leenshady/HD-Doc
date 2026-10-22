@@ -150,6 +150,7 @@
   "gui.log.no_pythonw": "未找到 pythonw.exe，提权重启后可能出现命令窗口",
   "gui.log.bs_clamped": "块大小超过磁盘容量，已调整为 {sz}",
   "gui.log.quick_plan": "快速扫描：{n} 个区域，每区抽样 {sample}（共 {total}，占容量 {pct:.2f}%）",
+  "gui.log.quick_region_enlarged": "快速扫描：分段 {set} 会产生过多区域（每区都要启动一次 fio，开销失控），已自动放大为 {actual}",
   "gui.log.quick_no_size": "快速扫描需要已知容量来均匀布点；未能查询到容量，退化为整盘一次扫描",
   "gui.log.capacity_plan": "容量 {sz} | {n} 段 | 预计 {b} 块",
   "gui.log.no_size_map": "未能查询到目标容量，热力图仅显示整盘聚合统计（无位置信息）；fio 仍会自动探测设备大小完成扫描",

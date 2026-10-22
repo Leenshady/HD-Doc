@@ -18,13 +18,14 @@ HD_Doc.py —— 入口：解析命令行参数并分发到 CLI 或 GUI
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --limit-mb 64   # 只扫前 64MB（试扫）
   python HD_Doc.py --cli --target "\\\\.\\PhysicalDrive1" --no-elevate    # 禁止自动提权
 
-  Linux / Ubuntu（同样支持 GUI）：
+  Linux（Ubuntu / 银河麒麟 / openKylin，同样支持 GUI）：
   sudo apt install python3-tk fio && pip install -r requirements.txt
   sudo python3 HD_Doc.py                                     # GUI（root 才能扫物理盘）
   python3 HD_Doc.py --cli --target /dev/sda --quick          # 扫 NVMe/ATA 盘
   python3 HD_Doc.py --cli --target ./test.img --bs 4M        # 扫镜像文件（无需 root）
   物理盘在 Linux 上形如 /dev/sda、/dev/nvme0n1；非 root 启动时界面会指引
   pkexec / sudo 路线（见 HD_Doc_core.request_elevation）。
+  rpm 系（麒麟服务器 V10）：sudo dnf install fio python3-tkinter
 
 打包成 Windows 可执行文件
   python build_exe.py          # PyInstaller 单文件打包，一次产出两个变体：
@@ -77,9 +78,9 @@ def build_parser():
     ap.add_argument("--bs", default="auto",
                     help="block size, e.g. 4M / 512K / auto (default: auto)")
     ap.add_argument("--segment-gb", type=float, default=None,
-                    help="full-scan segment size in GB; 0/none = whole disk "
-                         "at once (default: 4; quick scan always samples 256 "
-                         "fixed regions, one per heatmap cell)")
+                    help="segment size in GB; 0/none = whole disk at once "
+                         "(default: 4; quick scan uses the same setting: one "
+                         "head sample per segment)")
     ap.add_argument("--quick", action="store_true",
                     help="quick scan (HD Tune Quick Scan style): read only the head "
                          "sample of each region and skip the rest")

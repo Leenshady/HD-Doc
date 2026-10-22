@@ -1070,32 +1070,6 @@ def sanitize_segments(segments, bs):
     return segs
 
 
-def plan_cell_segments(total_size, n_cells=MAP_CELLS, bs=None):
-    """默认分段：把整盘**固定切成 n_cells 段**（与热力图格一一对应）。
-
-    为什么不复用 plan_segments(total, ⌈total/n⌉, bs)：段大小先按格数
-    向上取整、再被 plan_segments 向下对齐 bs，1TB 盘会切出 257 段
-    （对齐截断让末段又凑出一段）——段数不固定，"一段≈一格"的映射
-    出现一格跨两段。本函数反过来：先定段数，再把段大小向下对齐 bs，
-    对齐余数并进末段——前 n-1 段等长且 offset 天然 bs 对齐，末段稍大
-    （< 2×seg），段数恒定 n_cells。
-
-    容量未知返回 [(0, None)]（整盘一次降级）；盘比 n_cells 个 IO 块
-    还小（极小盘/镜像）时同样退化为整盘一次——那种盘分段没有意义。
-    """
-    if not total_size or n_cells <= 0:
-        return [(0, None)]
-    if bs:
-        seg = (int(total_size) // int(n_cells) // bs) * bs
-    else:
-        seg = int(total_size) // int(n_cells)
-    if seg < (bs or 1):
-        return [(0, None)]
-    segs = [(i * seg, seg) for i in range(n_cells - 1)]
-    segs.append(((n_cells - 1) * seg, int(total_size) - (n_cells - 1) * seg))
-    return segs
-
-
 def expected_io_count(size, off, total_size, bs, seg_bytes_done=0):
     """一个段预期能被 fio 读走的整块数，返回 (expected_ios, unread_tail_bytes)。
 
@@ -1133,34 +1107,59 @@ def expected_io_count(size, off, total_size, bs, seg_bytes_done=0):
 # 快速扫描（类 HD Tune Quick Scan）：把磁盘切成若干"区域"，每区只读开头
 # 一小段样本，跳过其余数据。坏道通常成簇分布，抽样足以发现明显损伤区域，
 # 耗时约为全盘扫描的几十分之一。
-QUICK_MAX_REGIONS = 128     # 区域数上限（仅显式区域大小路径）：每个区域一次
+QUICK_MAX_REGIONS = 128     # 区域数上限（仅未显式指定分段大小时）：每个区域一次
                             # fio 启动（约 1 秒），过多时启动开销会累积成主要
                             # 耗时，故 plan_quick_segments 自动放大区域
+QUICK_HARD_MAX_REGIONS = 1024   # 显式分段大小时的区域数硬上限：用户明确选了段
+                                # 大小就严格按它分区（1TB 盘 4G 段 → 233 区，
+                                # 不再为压段数偷偷翻倍成 8G×117 区——用户反馈
+                                # "取消固定 256 段，按照分段设置分段"），仅段数
+                                # 失控（超大盘配极小段，几千次 fio 启动会让
+                                # 快速扫描比整盘扫描还慢）才翻倍兜底
 QUICK_DEFAULT_SAMPLE = 16 * 1024 * 1024   # 默认每区抽样 16MB
-# 快速扫描不再有固定区域大小常量：默认按热力图格数固定布点
-# （plan_quick_cell_regions），区域数同样不随容量漂移。
+# 快速扫描与全段扫描共用同一套分段设置（GUI 分段下拉 / --segment-gb，
+# 默认 4G）：按分段大小把磁盘切成若干区域，每区只读开头样本。
 
 
 def plan_quick_segments(total_size, seg_bytes, sample_bytes, bs=None,
                         max_regions=QUICK_MAX_REGIONS):
     """快速扫描分段：返回 [(offset, sample_size)]，每区只读开头样本。
 
-    seg_bytes 为 None（整盘一次）时区域大小按 max_regions 均分；区域过多时
-    自动放大（2 的幂次）到上限以内。样本不超过区域大小；offset 与样本大小
-    都对齐到 bs（direct IO 要求，未对齐会 EINVAL，实测 error=22）。
-    容量未知时退化为 [(0, None)]（整盘一次），由调用方提示。
+    seg_bytes 为显式值（GUI 分段下拉 / --segment-gb，默认 4G）：严格按该
+    大小分区，段数 = ⌈容量/段大小⌉——快速扫描与全段扫描使用同一套分段
+    设置（用户反馈"取消固定 256 段，按照分段设置分段"）。旧版为把段数
+    压进 QUICK_MAX_REGIONS 会把 4G 段偷偷翻倍成 8G（1TB 盘只剩 117 区），
+    现在只有段数超过 QUICK_HARD_MAX_REGIONS（超大盘配极小段，几千次
+    fio 启动开销失控）才翻倍兜底。
+    seg_bytes 为 None（未指定分段大小，如 GUI 选"整盘一次"）：区域大小按
+    max_regions 均分，区域过多时自动放大（2 的幂次）到上限以内。
+    样本不超过区域大小；offset 与样本大小都对齐到 bs（direct IO 要求，
+    未对齐会 EINVAL，实测 error=22）。容量未知时退化为 [(0, None)]
+    （整盘一次），由调用方提示。
     """
     if not total_size:
         return [(0, None)]
     if not sample_bytes or sample_bytes <= 0:
         sample_bytes = QUICK_DEFAULT_SAMPLE
-    region = seg_bytes if seg_bytes else max(bs or 512, -(-total_size // max_regions))
-    while region < total_size and (total_size + region - 1) // region > max_regions:
+    if seg_bytes:
+        region = seg_bytes
+        limit = QUICK_HARD_MAX_REGIONS
+    else:
+        region = max(bs or 512, -(-total_size // max_regions))
+        limit = max_regions
+    # 对齐 + 上限收敛：区域大小向下对齐到 bs（direct IO 要求 offset 对齐），
+    # 但对齐会缩小区域、放大段数（1TB 盘 128 等分 = 7.8GB/区，对齐 4M 后
+    # 段数暴涨 6 倍——旧版 None 路径的潜在 bug），故对齐后复算段数，仍超
+    # 上限就翻倍，直到"对齐"与"不超上限"同时满足
+    while True:
+        r = max(bs, (region // bs) * bs) if bs else region
+        if r >= total_size or (total_size + r - 1) // r <= limit:
+            region = r
+            break
         region *= 2
     if region > total_size:
         region = total_size
     if bs:
-        region = max(bs, (region // bs) * bs)
         sample_bytes = min(sample_bytes, region)
         sample_bytes = max(bs, (sample_bytes // bs) * bs)
     else:
@@ -1176,43 +1175,16 @@ def plan_quick_segments(total_size, seg_bytes, sample_bytes, bs=None,
     return segs or [(0, None)]
 
 
-def plan_quick_cell_regions(total_size, n_cells=MAP_CELLS,
-                            sample_bytes=QUICK_DEFAULT_SAMPLE, bs=None):
-    """快速扫描默认布点：固定 n_cells 个区域（与热力图格一一对应），
-    每区只读开头样本。返回 [(offset, sample_size)]。
-
-    与 plan_quick_segments（固定区域大小 + 在上限内自动翻倍）的区别是
-    区域数同样不随容量漂移：1TB 盘固定 256 区，而不是 4G 区域被
-    QUICK_MAX_REGIONS 翻倍成 8G 后的 117 区（用户反馈"测试扫描分成
-    117 段，而不是 256 段"）。
-
-    样本 = min(sample_bytes, 区域跨度) 并对齐 bs：小盘上样本被区域截断，
-    "每格一个样本"的语义不变（盘小，读完整盘也只要几秒，仍是快速扫描）。
-    区域小于一个 IO 块（极小盘）/容量未知 → [(0, None)] 整盘一次。
-    """
-    regions = plan_cell_segments(total_size, n_cells, bs)
-    if regions == [(0, None)]:
-        # 极小盘（区域 < 一个 IO 块）/容量未知：退化为整盘一次。已知容量时
-        # 带显式 size——与 plan_segments 的"整盘一次"语义一致，报告里的
-        # 覆盖率才不会显示成 0（None 大小无法计算覆盖字节数）
-        return [(0, int(total_size))] if total_size else [(0, None)]
-    out = []
-    for off, span in regions:
-        s = min(int(sample_bytes or QUICK_DEFAULT_SAMPLE), span)
-        if bs:
-            s = min(max(bs, (s // bs) * bs), span)
-        out.append((off, s))
-    return out
-
-
 def quick_scan_setup(size, bs, seg_bytes, sample_bytes):
     """快速扫描参数收口（GUI/CLI 共用）：返回 (bs, segments, sample_bytes)。
 
-    seg_bytes=None（默认）：按热力图格数固定布点（plan_quick_cell_regions，
-    区域数恒定 MAP_CELLS，一段对应一格）；显式值：按固定区域大小
-    （plan_quick_segments，超上限自动翻倍）。容量未知时无法布点，退化为
-    整盘一次（调用方应提示）；块大小超过抽样大小时缩小块大小（否则抽样
-    会被抬到块大小，失去快速意义）。
+    快速扫描与全段扫描共用同一套分段设置：seg_bytes 为显式值（GUI 分段
+    下拉 / --segment-gb，默认 4G）时严格按分段大小分区，每区只读开头样本
+    （用户反馈"取消固定 256 段，按照分段设置分段"——旧版这里固定按热力图
+    格数布 256 区，与分段下拉脱节）；seg_bytes 为 None（GUI 选"整盘一次"
+    未指定分段大小）时按 QUICK_MAX_REGIONS 均分布点。容量未知时无法布点，
+    退化为整盘一次（调用方应提示）；块大小超过抽样大小时缩小块大小（否则
+    抽样会被抬到块大小，失去快速意义）。
     """
     if not size:
         return bs, plan_segments(0, seg_bytes, bs), 0
@@ -1222,10 +1194,7 @@ def quick_scan_setup(size, bs, seg_bytes, sample_bytes):
         sample = QUICK_DEFAULT_SAMPLE
     if bs > sample:
         bs = sample
-    if seg_bytes:
-        segs = plan_quick_segments(size, seg_bytes, sample, bs)
-    else:
-        segs = plan_quick_cell_regions(size, MAP_CELLS, sample, bs)
+    segs = plan_quick_segments(size, seg_bytes, sample, bs)
     return bs, segs, (segs[0][1] if segs and segs[0][1] else 0)
 
 
@@ -1795,9 +1764,14 @@ def _fio_target_arg(target):
     修法：带盘符的绝对路径去掉 "C:" 冒号改为根相对路径，同时把 fio
     子进程的 cwd 设为盘符根（"C:\\"），fio 解析该相对路径时仍然落到
     同一个文件，且不再触发冒号拆分。
+    设备路径的 UNC 别名（//./PhysicalDriveN、//./C:）转回反斜杠形式
+    （\\\\.\\PhysicalDriveN）：fio 对正斜杠形式会走"普通文件"分支去
+    unlink 探测，直接 EACCES 失败（实测 errno 13，filesetup.c:151）。
     """
     if len(target) >= 2 and target[1] == ":" and target[0].isalpha():
         return target[2:].lstrip("\\/"), target[:2] + "\\"
+    if target.startswith("//./"):
+        target = "\\\\.\\" + target[4:]
     return target, None
 
 
