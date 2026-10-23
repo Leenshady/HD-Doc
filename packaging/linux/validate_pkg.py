@@ -132,11 +132,22 @@ def main():
 
     need_files = ["HD_Doc.py", "HD_Doc_core.py", "HD_Doc_gui.py",
                   "HD_Doc_cli.py", "requirements.txt", "README.md",
-                  "README.zh-CN.md", "install.sh", "uninstall.sh",
+                  "README.zh-CN.md", "LICENSE", "install.sh", "uninstall.sh",
                   "lang/en.json", "lang/zh.json", "img/HD_Doc.png",
                   "img/hd-doc-256.png"]
     for f in need_files:
         check("包含 %s" % f, "%s/%s" % (top, f) in members)
+    # GPL 硬性要求：随包分发的许可文本必须是完整 GPL-3.0（含 17 章与
+    # 应用指引），且带有本项目的版权/作者声明头
+    lic_txt = members["%s/LICENSE" % top][1].decode("utf-8")
+    check("LICENSE 为完整 GPL-3.0",
+          ("GNU GENERAL PUBLIC LICENSE" in lic_txt
+           and "END OF TERMS AND CONDITIONS" in lic_txt
+           and "How to Apply These Terms to Your New Programs" in lic_txt
+           and "17. Interpretation of Sections 15 and 16." in lic_txt))
+    check("LICENSE 含项目版权与 AI 作者声明",
+          ("HD Doc" in lic_txt and "WorkBuddy" in lic_txt
+           and "entirely by AI" in lic_txt))
 
     m_install, b_install = members["%s/install.sh" % top]
     check("install.sh 权限 0755", m_install.mode == 0o755, oct(m_install.mode))

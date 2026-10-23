@@ -49,9 +49,10 @@ DIST = os.path.join(HERE, "dist")
 PAYLOAD_DIR = os.path.join(HERE, "packaging", "linux")
 MARKER = b"__HD_DOC_PAYLOAD__"
 
-# 打进安装包的源码文件（排除测试/构建产物/镜像）
+# 打进安装包的源码文件（排除测试/构建产物/镜像；LICENSE 随包分发是
+# GPL 的硬性要求——二进制/安装包必须能拿到完整许可文本）
 APP_FILES = ("HD_Doc.py", "HD_Doc_core.py", "HD_Doc_gui.py", "HD_Doc_cli.py",
-             "requirements.txt", "README.md", "README.zh-CN.md")
+             "requirements.txt", "README.md", "README.zh-CN.md", "LICENSE")
 # 目录：整目录打包（内部文件全部收入）
 APP_DIRS = ("lang", "img")
 

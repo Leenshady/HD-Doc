@@ -350,4 +350,16 @@ test/           test suites (python test/test_units.py, ...)
 
 ## License
 
-MIT
+**GPL-3.0-or-later** — the full text is in [LICENSE](LICENSE). Redistribution
+and reuse must keep the same license and provide source code.
+
+### Authorship
+
+This project was written **entirely by AI**. Signed: **WorkBuddy**.
+
+The publisher's role was limited to providing prompts, requirements, and
+testing — no human-authored code is included in this repository.
+
+---
+
+*Written entirely by AI — signed, **WorkBuddy**, 2026.*

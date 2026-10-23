@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+#
+# HD Doc —— GPL-3.0-or-later，完整文本见仓库根目录 LICENSE。
+# 全部代码由 AI（WorkBuddy）完成；发布者仅提供提示词、需求与测试。
 """
 HD_Doc_cli.py —— 命令行模式（只依赖 HD_Doc_core，不 import GUI 代码）
 
