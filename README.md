@@ -6,6 +6,8 @@ and lists the blocks that fail to read. Nothing is ever written to the target.
 
 Runs on Windows (admin rights required for physical disks) and Linux.
 
+[中文说明](README.zh-CN.md)
+
 ## Features
 
 - Heat map with a fixed 256-cell grid (same layout for every scan, so the
