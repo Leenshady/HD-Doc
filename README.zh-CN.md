@@ -5,7 +5,30 @@
 
 支持 Windows（扫描物理磁盘需要管理员权限）与 Linux。
 
-[English README](README.md)
+## 平台支持
+
+| 系统 | 版本 | 架构 | CLI | GUI | 是否实测 |
+|---|---|---|---|---|---|
+| Windows | 10 | x86_64 | 支持 | 支持（UAC 提权） | 是——开发平台，全套测试与 exe 构建均在此完成 |
+| Linux（通用） | Python 3.8+ 的发行版 | x86_64 / arm64 / loongarch | 支持 | 支持（需 X11 或 Wayland 桌面） | 未单独实测（安装包与架构无关，见 Ubuntu/麒麟两行） |
+| Ubuntu | 20.04 LTS 及更新（仓库自带 python3-pyqt5） | x86_64 / arm64 | 支持 | 支持（pkexec 提权） | 是——安装与 GUI 运行已验证；提权流程修复后建议复测 |
+| 银河麒麟（桌面版） | V10（deb 系，UKUI） | x86_64 / arm64 / loongarch | 支持 | 支持（pkexec，已透传 Wayland） | 是——安装与 GUI 运行已验证；提权流程修复后建议复测 |
+| 银河麒麟（服务器版） | V10（rpm 系） | x86_64 / arm64 / loongarch | 支持 | 不支持（无桌面环境，设计为 CLI） | 未实测（文档路径） |
+
+安装方式：
+
+| 系统 | 可选安装方式 |
+|---|---|
+| Windows | `HD_Doc.exe` / `HD_Doc_NoFio.exe` 双击即用；或源码运行 |
+| Ubuntu / 麒麟桌面版（deb 系） | `.deb`（apt 安装）、`.run`、`.tar.gz`；或源码运行 |
+| 麒麟服务器版（rpm 系）及其他 Linux | `.run`、`.tar.gz`（自动切 dnf/yum）；或源码运行 |
+
+说明：
+
+- 全部自动化测试在 Windows 开发机上运行；GUI 测试套件以 Qt offscreen
+  无头方式执行真实界面代码
+- Windows 11 未实测
+- CLI 输出在所有平台均为英文；GUI 为中英双语
 
 ## 功能
 

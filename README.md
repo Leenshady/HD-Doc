@@ -6,7 +6,30 @@ and lists the blocks that fail to read. Nothing is ever written to the target.
 
 Runs on Windows (admin rights required for physical disks) and Linux.
 
-[中文说明](README.zh-CN.md)
+## Platform support
+
+| System | Version | Architectures | CLI | GUI | Tested |
+|---|---|---|---|---|---|
+| Windows | 10 | x86_64 | Yes | Yes — UAC elevation | Yes — development platform (full test suite and exe builds run here) |
+| Linux (generic) | any distro with Python 3.8+ | x86_64 / arm64 / loongarch | Yes | Yes — needs an X11 or Wayland desktop | Not directly (packages are architecture-independent; covered by the Ubuntu/Kylin rows) |
+| Ubuntu | 20.04 LTS and newer (`python3-pyqt5` in the repo) | x86_64 / arm64 | Yes | Yes — pkexec elevation | Yes — install and GUI run verified; re-check the elevation flow after the latest fix |
+| Galaxy Kylin (desktop) | V10, deb based (UKUI) | x86_64 / arm64 / loongarch | Yes | Yes — pkexec, Wayland forwarded | Yes — install and GUI run verified; re-check the elevation flow after the latest fix |
+| Galaxy Kylin (server) | V10, rpm based | x86_64 / arm64 / loongarch | Yes | No — headless by design, CLI only | Documented path, not verified |
+
+Install forms:
+
+| System | How to install |
+|---|---|
+| Windows | `HD_Doc.exe` / `HD_Doc_NoFio.exe` (double-click), or run from source |
+| Ubuntu / Kylin desktop (deb based) | `.deb` (apt), `.run`, `.tar.gz`, or run from source |
+| Kylin server (rpm based) and other Linux | `.run`, `.tar.gz` (installer switches to dnf/yum), or run from source |
+
+Notes:
+
+- All automated tests run on the Windows development machine; the GUI
+  suites execute the real interface headless (Qt offscreen platform)
+- Windows 11 is untested
+- CLI output is English on every platform; the GUI is bilingual
 
 ## Features
 
